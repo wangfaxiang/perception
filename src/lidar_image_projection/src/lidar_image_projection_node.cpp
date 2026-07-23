@@ -1,10 +1,13 @@
 /**
  * @file lidar_image_projection_node.cpp
- * @brief 将速腾聚创E1固态雷达点云投影为距离/强度图像
+ * @brief 将速腾聚创E1固态雷达点云投影为距离/强度/高度图像，并提取高度边缘（防矿卡坠坡）
  *
  * E1雷达规格:
  *   - 水平视场角: 120° (-60° ~ +60°)
  *   - 垂直视场角: 90°  (-45° ~ +45°)
+ *
+ * 边缘检测: 对高度图像做Canny边缘检测，将高度突变处（边坡边缘）标记为红色，
+ *           叠加在高度图上发布，用于防止矿卡坠坡。
  *
  * 参考: LeGO-LOAM imageProjection.cpp 的点云投影思路
  */
@@ -57,12 +60,20 @@ public:
     this->declare_parameter("dilate_kernel_size", 3);    // 膨胀核大小（0=禁用）
     this->declare_parameter("fill_holes", true);         // 填充所有空洞
 
+    // 边缘检测参数（防矿卡坠坡）
+    this->declare_parameter("edge_image_topic", "/lidar_edge_image");  // 边缘图像话题
+    this->declare_parameter("enable_edge_detection", true);            // 是否启用边缘检测
+    this->declare_parameter("canny_low_thresh", 120);    // Canny 低阈值
+    this->declare_parameter("canny_high_thresh", 300);  // Canny 高阈值
+    this->declare_parameter("edge_min_height_diff", 0.3);  // 最小高度差（米），大于此值才认为是边缘
+
     // 读取参数
-    std::string input_topic, range_topic, intensity_topic, height_topic;
+    std::string input_topic, range_topic, intensity_topic, height_topic, edge_topic;
     this->get_parameter("input_topic", input_topic);
     this->get_parameter("range_image_topic", range_topic);
     this->get_parameter("intensity_image_topic", intensity_topic);
     this->get_parameter("height_image_topic", height_topic);
+    this->get_parameter("edge_image_topic", edge_topic);
     this->get_parameter("frame_id", frame_id_);
 
     this->get_parameter("horiz_fov_deg", horiz_fov_deg_);
@@ -77,6 +88,10 @@ public:
     this->get_parameter("height_bottom_gray", height_bottom_gray_);
     this->get_parameter("dilate_kernel_size", dilate_ks_);
     this->get_parameter("fill_holes", fill_holes_);
+    this->get_parameter("enable_edge_detection", enable_edge_);
+    this->get_parameter("canny_low_thresh", canny_low_);
+    this->get_parameter("canny_high_thresh", canny_high_);
+    this->get_parameter("edge_min_height_diff", edge_min_hdiff_);
 
     // 计算图像尺寸
     img_cols_ = static_cast<int>(horiz_fov_deg_ / horiz_res_deg_);
@@ -105,6 +120,17 @@ public:
     pub_height_img_ = this->create_publisher<sensor_msgs::msg::Image>(
       height_topic, 10);
 
+    // 边缘图像发布器（防坠坡）
+    if (enable_edge_) {
+      pub_edge_img_ = this->create_publisher<sensor_msgs::msg::Image>(
+        edge_topic, 10);
+      RCLCPP_INFO(this->get_logger(),
+        "Edge detection ENABLED: Canny[%d,%d], min_height_diff=%.2fm",
+        canny_low_, canny_high_, edge_min_hdiff_);
+    } else {
+      RCLCPP_INFO(this->get_logger(), "Edge detection DISABLED.");
+    }
+
     RCLCPP_INFO(this->get_logger(), "LidarImageProjection node started.");
   }
 
@@ -124,6 +150,9 @@ private:
     cv::Mat intens_mat = cv::Mat::zeros(img_rows_, img_cols_, CV_32FC1);
     cv::Mat height_mat = cv::Mat::zeros(img_rows_, img_cols_, CV_32FC1);
     cv::Mat count_mat  = cv::Mat::zeros(img_rows_, img_cols_, CV_32FC1);
+
+    // 有效性掩码: +1.0 = 有点云数据, -1.0 = 无数据（空洞）
+    cv::Mat valid_mask(img_rows_, img_cols_, CV_32FC1, cv::Scalar(-1.0f));
 
     for (const auto& pt : cloud->points) {
       float range = std::sqrt(pt.x * pt.x + pt.y * pt.y + pt.z * pt.z);
@@ -172,6 +201,9 @@ private:
       for (int c = 0; c < img_cols_; ++c) {
         float cnt = count_mat.at<float>(r, c);
         if (cnt > 0) {
+          // 标记为有效像素 (+1)
+          valid_mask.at<float>(r, c) = 1.0f;
+
           // 距离归一化到 0-255 (近→亮, 远→暗)
           float range_val = range_mat.at<float>(r, c) / cnt;
           float range_norm = 1.0f - (range_val - min_range_) / (max_range_ - min_range_);
@@ -202,6 +234,10 @@ private:
       cv::dilate(range_img, range_img, kernel);
       cv::dilate(intens_img, intens_img, kernel);
       cv::dilate(height_img, height_img, kernel);
+
+      // 膨胀填充的像素标记为有效 (+1)
+      cv::dilate(valid_mask, valid_mask, kernel);
+      valid_mask.setTo(1.0f, valid_mask > -0.5f);  // 膨胀后 > -0.5 的设为 +1
     }
 
     // 图像修补：用更大膨胀填充所有剩余空洞
@@ -211,6 +247,65 @@ private:
       cv::dilate(range_img, range_img, kernel2);
       cv::dilate(intens_img, intens_img, kernel2);
       cv::dilate(height_img, height_img, kernel2);
+
+      // 膨胀填充的像素标记为有效 (+1)
+      cv::dilate(valid_mask, valid_mask, kernel2);
+      valid_mask.setTo(1.0f, valid_mask > -0.5f);
+    }
+
+    // ===== 边缘检测：提取高度突变（边坡边缘），红色叠加显示 =====
+    cv::Mat edge_img;
+    if (enable_edge_) {
+      // 1. Canny 边缘检测（在膨胀填充后的 8-bit 高度图上）
+      cv::Mat canny_edges;
+      cv::Canny(height_img, canny_edges, canny_low_, canny_high_);
+
+      // 1.5 屏蔽无效像素 (-1) 上的边缘：只保留有效像素 (+1) 上的边缘
+      {
+        cv::Mat edge_mask(img_rows_, img_cols_, CV_8UC1);
+        for (int r = 0; r < img_rows_; ++r)
+          for (int c = 0; c < img_cols_; ++c)
+            edge_mask.at<uint8_t>(r, c) = (valid_mask.at<float>(r, c) > 0.0f) ? 255 : 0;
+        cv::bitwise_and(canny_edges, edge_mask, canny_edges);
+      }
+
+      // 2. 形态学去噪：先闭运算连接断边
+      cv::Mat kernel3 = cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(3, 3));
+      cv::morphologyEx(canny_edges, canny_edges, cv::MORPH_CLOSE, kernel3);
+
+      // 3. 去除小面积噪点（< 15 像素）
+      std::vector<std::vector<cv::Point>> contours;
+      cv::findContours(canny_edges.clone(), contours, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_SIMPLE);
+      cv::Mat clean_edges = cv::Mat::zeros(canny_edges.size(), CV_8UC1);
+      for (const auto& cnt : contours) {
+        if (cv::contourArea(cnt) > 15.0) {
+          cv::drawContours(clean_edges, std::vector<std::vector<cv::Point>>{cnt}, -1,
+                           cv::Scalar(255), 1);  // 画 1 像素宽轮廓线
+        }
+      }
+
+      // 4. 将边缘以红色叠加到高度图上（BGR 格式）
+      cv::Mat height_bgr;
+      cv::cvtColor(height_img, height_bgr, cv::COLOR_GRAY2BGR);
+
+      for (int r = 0; r < img_rows_; ++r) {
+        for (int c = 0; c < img_cols_; ++c) {
+          if (clean_edges.at<uint8_t>(r, c) > 0) {
+            height_bgr.at<cv::Vec3b>(r, c) = cv::Vec3b(0, 0, 255);  // 红色
+          }
+        }
+      }
+
+      edge_img = height_bgr;
+    }
+    // ===== 边缘检测 END =====
+
+    // 高度图统一转为 BGR（灰度三通道），有边缘时叠加红色
+    cv::Mat height_bgr_out;
+    if (enable_edge_) {
+      height_bgr_out = edge_img;  // 已包含红色边缘叠加
+    } else {
+      cv::cvtColor(height_img, height_bgr_out, cv::COLOR_GRAY2BGR);
     }
 
     // 发布图像
@@ -229,10 +324,19 @@ private:
     pub_intensity_img_->publish(*intens_msg);
 
     auto height_msg = cv_bridge::CvImage(
-      std_msgs::msg::Header(), "mono8", height_img).toImageMsg();
+      std_msgs::msg::Header(), "bgr8", height_bgr_out).toImageMsg();
     height_msg->header.stamp = timestamp;
     height_msg->header.frame_id = frame_id_;
     pub_height_img_->publish(*height_msg);
+
+    // 发布边缘图像（BGR 格式，红色=边坡边缘）
+    if (enable_edge_ && !edge_img.empty()) {
+      auto edge_msg = cv_bridge::CvImage(
+        std_msgs::msg::Header(), "bgr8", edge_img).toImageMsg();
+      edge_msg->header.stamp = timestamp;
+      edge_msg->header.frame_id = frame_id_;
+      pub_edge_img_->publish(*edge_msg);
+    }
   }
 
   // 订阅和发布
@@ -240,6 +344,7 @@ private:
   rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr pub_range_img_;
   rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr pub_intensity_img_;
   rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr pub_height_img_;
+  rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr pub_edge_img_;   // 边缘图像
 
   // 参数
   std::string frame_id_;
@@ -253,6 +358,11 @@ private:
   int img_cols_, img_rows_;
   double horiz_min_rad_, vert_max_rad_;
   double horiz_res_rad_, vert_res_rad_;
+
+  // 边缘检测参数
+  bool enable_edge_;
+  int canny_low_, canny_high_;
+  double edge_min_hdiff_;
 };
 
 int main(int argc, char ** argv)
