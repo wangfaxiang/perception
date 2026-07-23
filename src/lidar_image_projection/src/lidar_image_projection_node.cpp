@@ -62,18 +62,20 @@ public:
 
     // 边缘检测参数（防矿卡坠坡）
     this->declare_parameter("edge_image_topic", "/lidar_edge_image");  // 边缘图像话题
+    this->declare_parameter("edge_cloud_topic", "/lidar_edge_cloud");  // 边缘点云话题
     this->declare_parameter("enable_edge_detection", true);            // 是否启用边缘检测
     this->declare_parameter("canny_low_thresh", 120);    // Canny 低阈值
     this->declare_parameter("canny_high_thresh", 300);  // Canny 高阈值
     this->declare_parameter("edge_min_height_diff", 0.3);  // 最小高度差（米），大于此值才认为是边缘
 
     // 读取参数
-    std::string input_topic, range_topic, intensity_topic, height_topic, edge_topic;
+    std::string input_topic, range_topic, intensity_topic, height_topic, edge_topic, edge_cloud_topic;
     this->get_parameter("input_topic", input_topic);
     this->get_parameter("range_image_topic", range_topic);
     this->get_parameter("intensity_image_topic", intensity_topic);
     this->get_parameter("height_image_topic", height_topic);
     this->get_parameter("edge_image_topic", edge_topic);
+    this->get_parameter("edge_cloud_topic", edge_cloud_topic);
     this->get_parameter("frame_id", frame_id_);
 
     this->get_parameter("horiz_fov_deg", horiz_fov_deg_);
@@ -124,6 +126,8 @@ public:
     if (enable_edge_) {
       pub_edge_img_ = this->create_publisher<sensor_msgs::msg::Image>(
         edge_topic, 10);
+      pub_edge_cloud_ = this->create_publisher<sensor_msgs::msg::PointCloud2>(
+        edge_cloud_topic, 10);
       RCLCPP_INFO(this->get_logger(),
         "Edge detection ENABLED: Canny[%d,%d], min_height_diff=%.2fm",
         canny_low_, canny_high_, edge_min_hdiff_);
@@ -149,6 +153,8 @@ private:
     cv::Mat range_mat  = cv::Mat::zeros(img_rows_, img_cols_, CV_32FC1);
     cv::Mat intens_mat = cv::Mat::zeros(img_rows_, img_cols_, CV_32FC1);
     cv::Mat height_mat = cv::Mat::zeros(img_rows_, img_cols_, CV_32FC1);
+    cv::Mat x_mat      = cv::Mat::zeros(img_rows_, img_cols_, CV_32FC1);
+    cv::Mat y_mat      = cv::Mat::zeros(img_rows_, img_cols_, CV_32FC1);
     cv::Mat count_mat  = cv::Mat::zeros(img_rows_, img_cols_, CV_32FC1);
 
     // 有效性掩码: +1.0 = 有点云数据, -1.0 = 无数据（空洞）
@@ -185,11 +191,16 @@ private:
         continue;
       }
 
-      // 累加（处理多个点落入同一像素的情况）
-      range_mat.at<float>(row, col)  += range;
-      intens_mat.at<float>(row, col) += pt.intensity;
-      height_mat.at<float>(row, col) += pt.z;
-      count_mat.at<float>(row, col)  += 1.0f;
+      // 同一像素多个点时，只保留z最高的那个点
+      float& cnt = count_mat.at<float>(row, col);
+      if (cnt == 0 || pt.z > height_mat.at<float>(row, col)) {
+        range_mat.at<float>(row, col)  = range;
+        intens_mat.at<float>(row, col) = pt.intensity;
+        height_mat.at<float>(row, col) = pt.z;
+        x_mat.at<float>(row, col)      = pt.x;
+        y_mat.at<float>(row, col)      = pt.y;
+      }
+      cnt += 1.0f;
     }
 
     // 归一化并生成最终图像
@@ -205,18 +216,18 @@ private:
           valid_mask.at<float>(r, c) = 1.0f;
 
           // 距离归一化到 0-255 (近→亮, 远→暗)
-          float range_val = range_mat.at<float>(r, c) / cnt;
+          float range_val = range_mat.at<float>(r, c);
           float range_norm = 1.0f - (range_val - min_range_) / (max_range_ - min_range_);
           range_norm = std::clamp(range_norm, 0.0f, 1.0f);
           range_img.at<uint8_t>(r, c) = static_cast<uint8_t>(range_norm * 255.0f);
 
           // 强度归一化到 0-255
-          float intens_val = intens_mat.at<float>(r, c) / cnt;
+          float intens_val = intens_mat.at<float>(r, c);
           float intens_norm = std::min(intens_val / 255.0f, 1.0f);
           intens_img.at<uint8_t>(r, c) = static_cast<uint8_t>(intens_norm * 255.0f);
 
           // 高度映射: z∈[height_bottom, height_top] → 灰度 [gray_bottom, gray_top]
-          float h = height_mat.at<float>(r, c) / cnt;
+          float h = height_mat.at<float>(r, c);
           int gray = 0;
           if (h <= height_top_ && h >= height_bottom_) {
             float t = (height_top_ - h) / (height_top_ - height_bottom_);
@@ -252,6 +263,9 @@ private:
       cv::dilate(valid_mask, valid_mask, kernel2);
       valid_mask.setTo(1.0f, valid_mask > -0.5f);
     }
+
+    // 时间戳（图像和点云共用）
+    auto timestamp = this->now();
 
     // ===== 边缘检测：提取高度突变（边坡边缘），红色叠加显示 =====
     cv::Mat edge_img;
@@ -297,6 +311,53 @@ private:
       }
 
       edge_img = height_bgr;
+
+      // ===== 5. 提取边缘点云：边缘像素同列上下搜10行，取z最高者（坡上） =====
+      const int SEARCH_RANGE = 10;  // 上下各搜10行 ≈ 上下各2°
+      pcl::PointCloud<pcl::PointXYZI> edge_cloud;
+      cv::Mat used_mask(img_rows_, img_cols_, CV_8UC1, cv::Scalar(0));  // 去重
+
+      for (int r = 0; r < img_rows_; ++r) {
+        for (int c = 0; c < img_cols_; ++c) {
+          if (clean_edges.at<uint8_t>(r, c) == 0) continue;
+
+          // 同列上下搜，找 z 最高的像素 = 坡上
+          float best_z = -std::numeric_limits<float>::infinity();
+          int best_r = -1;
+          for (int dr = -SEARCH_RANGE; dr <= SEARCH_RANGE; ++dr) {
+            int nr = r + dr;
+            if (nr < 0 || nr >= img_rows_) continue;
+            float cnt_n = count_mat.at<float>(nr, c);
+            if (cnt_n <= 0) continue;
+            float z_val = height_mat.at<float>(nr, c);
+            if (z_val > best_z) {
+              best_z = z_val;
+              best_r = nr;
+            }
+          }
+          if (best_r < 0) continue;
+
+          // 去重
+          if (used_mask.at<uint8_t>(best_r, c) == 1) continue;
+          used_mask.at<uint8_t>(best_r, c) = 1;
+
+          pcl::PointXYZI pt;
+          pt.x = x_mat.at<float>(best_r, c);
+          pt.y = y_mat.at<float>(best_r, c);
+          pt.z = height_mat.at<float>(best_r, c);
+          pt.intensity = intens_mat.at<float>(best_r, c);
+          edge_cloud.push_back(pt);
+        }
+      }
+
+      // 发布边缘点云
+      if (!edge_cloud.empty()) {
+        sensor_msgs::msg::PointCloud2 edge_cloud_msg;
+        pcl::toROSMsg(edge_cloud, edge_cloud_msg);
+        edge_cloud_msg.header.stamp = timestamp;
+        edge_cloud_msg.header.frame_id = frame_id_;
+        pub_edge_cloud_->publish(edge_cloud_msg);
+      }
     }
     // ===== 边缘检测 END =====
 
@@ -309,8 +370,6 @@ private:
     }
 
     // 发布图像
-    auto timestamp = this->now();
-
     auto range_msg = cv_bridge::CvImage(
       std_msgs::msg::Header(), "mono8", range_img).toImageMsg();
     range_msg->header.stamp = timestamp;
@@ -344,7 +403,8 @@ private:
   rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr pub_range_img_;
   rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr pub_intensity_img_;
   rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr pub_height_img_;
-  rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr pub_edge_img_;   // 边缘图像
+  rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr pub_edge_img_;      // 边缘图像
+  rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pub_edge_cloud_;  // 边缘点云
 
   // 参数
   std::string frame_id_;
