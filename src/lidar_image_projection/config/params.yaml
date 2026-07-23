@@ -1,0 +1,41 @@
+# E1 固态雷达点云投影参数
+#
+# 雷达规格:
+#   水平视场角: 120° (-60° ~ +60°)
+#   垂直视场角: 90°  (-45° ~ +45°)
+lidar_image_projection:
+  ros__parameters:
+    # 输入点云话题
+    input_topic: "/rslidar_points"
+
+    # 输出图像话题
+    range_image_topic: "/lidar_range_image"
+    intensity_image_topic: "/lidar_intensity_image"
+    height_image_topic: "/lidar_height_image"
+
+    # 坐标系
+    frame_id: "rslidar"
+
+    # 视场角参数 (度)
+    horiz_fov_deg: 120.0
+    vert_fov_deg: 90.0
+
+    # 图像分辨率 (度/像素) - 越小图像越大
+    horiz_resolution_deg: 0.2   # 120/0.2 = 600 列
+    vert_resolution_deg: 0.2    # 90/0.2 = 450 行
+
+    # 距离范围 (米)
+    max_range: 100.0
+    min_range: 0.2
+
+    # 高度映射 (Z轴): z=0→灰度255, z=-10m→灰度120, 其余→0
+    height_top: 0.0      # z上限（m），映射到灰度255
+    height_bottom: -10.0  # z下限（m），映射到灰度120
+    height_top_gray: 255  # z上限对应灰度值
+    height_bottom_gray: 120  # z下限对应灰度值
+
+    # 形态学膨胀核大小 (0=不填充, 3=填充1像素间隙, 5=填充2像素间隙)
+    dilate_kernel_size: 10
+
+    # 图像修补填充所有空洞 (true=连续图像, 适合边缘提取)
+    fill_holes: false
