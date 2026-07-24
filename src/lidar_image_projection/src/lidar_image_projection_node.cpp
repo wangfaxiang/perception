@@ -21,9 +21,11 @@
 #include <pcl/point_cloud.h>
 #include <pcl/point_types.h>
 #include <pcl/filters/filter.h>
+#include <pcl/filters/voxel_grid.h>
 
 #include <string>
 #include <vector>
+#include <unordered_map>
 #include <algorithm>
 #include <cmath>
 
@@ -59,6 +61,9 @@ public:
     this->declare_parameter("dilate_kernel_size", 3);    // 膨胀核大小（0=禁用）
     this->declare_parameter("fill_holes", true);         // 填充所有空洞
 
+    // 体素降采样参数
+    this->declare_parameter("voxel_leaf_size", 0.03);     // 体素栅格边长（米），0=禁用
+
     // 边缘检测参数（防矿卡坠坡）
     this->declare_parameter("edge_image_topic", "/lidar_edge_image");  // 边缘图像话题
     this->declare_parameter("edge_cloud_topic", "/lidar_edge_cloud");  // 边缘点云话题
@@ -88,6 +93,7 @@ public:
     this->get_parameter("height_bottom_gray", height_bottom_gray_);
     this->get_parameter("dilate_kernel_size", dilate_ks_);
     this->get_parameter("fill_holes", fill_holes_);
+    this->get_parameter("voxel_leaf_size", voxel_leaf_size_);
     this->get_parameter("enable_edge_detection", enable_edge_);
     this->get_parameter("canny_low_thresh", canny_low_);
     this->get_parameter("canny_high_thresh", canny_high_);
@@ -145,6 +151,16 @@ private:
     std::vector<int> indices;
     pcl::removeNaNFromPointCloud(*cloud, *cloud, indices);
 
+    // 体素降采样（减少点云密度，加速后续处理）
+    if (voxel_leaf_size_ > 0.0) {
+      pcl::VoxelGrid<pcl::PointXYZI> voxel_filter;
+      voxel_filter.setInputCloud(cloud);
+      voxel_filter.setLeafSize(voxel_leaf_size_, voxel_leaf_size_, voxel_leaf_size_);
+      pcl::PointCloud<pcl::PointXYZI>::Ptr cloud_filtered(new pcl::PointCloud<pcl::PointXYZI>());
+      voxel_filter.filter(*cloud_filtered);
+      cloud = cloud_filtered;
+    }
+
     // 创建图像 (CV_32FC1 用于累积)
     cv::Mat height_mat = cv::Mat::zeros(img_rows_, img_cols_, CV_32FC1);
     cv::Mat x_mat      = cv::Mat::zeros(img_rows_, img_cols_, CV_32FC1);
@@ -154,6 +170,10 @@ private:
 
     // 有效性掩码: +1.0 = 有点云数据, -1.0 = 无数据（空洞）
     cv::Mat valid_mask(img_rows_, img_cols_, CV_32FC1, cv::Scalar(-1.0f));
+
+    // 像素索引 → 三维点坐标的映射（key = row * img_cols_ + col，扁平化索引）
+    // 同一像素多个点时只保留 z 最低的点，与 height_mat 保持一致
+    std::unordered_map<int, pcl::PointXYZI> pixel_to_point;
 
     for (const auto& pt : cloud->points) {
       float range = std::sqrt(pt.x * pt.x + pt.y * pt.y + pt.z * pt.z);
@@ -186,14 +206,15 @@ private:
         continue;
       }
 
-      // 同一像素多个点时，只保留z最高的那个点
+      // 同一像素多个点时，只保留z最低的那个点
       float& cnt = count_mat.at<float>(row, col);
       if (cnt == 0 || pt.z > height_mat.at<float>(row, col)) {
         height_mat.at<float>(row, col) = pt.z;
         x_mat.at<float>(row, col)      = pt.x;
         y_mat.at<float>(row, col)      = pt.y;
         intens_mat.at<float>(row, col) = pt.intensity;
-        
+        // 同步更新像素→三维点映射
+        pixel_to_point[row * img_cols_ + col] = pt;
       }
       cnt += 1.0f;
     }
@@ -296,41 +317,17 @@ private:
 
       edge_img = height_bgr;
 
-      // ===== 5. 提取边缘点云：边缘像素同列上下搜10行，取z最高者（坡上） =====
-      const int SEARCH_RANGE = 10;  // 上下各搜10行 ≈ 上下各2°
+      // ===== 5. 提取边缘点云：通过 pixel_to_point 映射直接反查三维点 =====
       pcl::PointCloud<pcl::PointXYZI> edge_cloud;
-      cv::Mat used_mask(img_rows_, img_cols_, CV_8UC1, cv::Scalar(0));  // 去重
 
       for (int r = 0; r < img_rows_; ++r) {
         for (int c = 0; c < img_cols_; ++c) {
           if (clean_edges.at<uint8_t>(r, c) == 0) continue;
 
-          // 同列上下搜，找 z 最高的像素 = 坡上
-          float best_z = -std::numeric_limits<float>::infinity();
-          int best_r = -1;
-          for (int dr = -SEARCH_RANGE; dr <= SEARCH_RANGE; ++dr) {
-            int nr = r + dr;
-            if (nr < 0 || nr >= img_rows_) continue;
-            float cnt_n = count_mat.at<float>(nr, c);
-            if (cnt_n <= 0) continue;
-            float z_val = height_mat.at<float>(nr, c);
-            if (z_val > best_z) {
-              best_z = z_val;
-              best_r = nr;
-            }
+          auto it = pixel_to_point.find((r) * img_cols_ + c);
+          if (it != pixel_to_point.end()) {
+            edge_cloud.push_back(it->second);
           }
-          if (best_r < 0) continue;
-
-          // 去重
-          if (used_mask.at<uint8_t>(best_r, c) == 1) continue;
-          used_mask.at<uint8_t>(best_r, c) = 1;
-
-          pcl::PointXYZI pt;
-          pt.x = x_mat.at<float>(best_r, c);
-          pt.y = y_mat.at<float>(best_r, c);
-          pt.z = height_mat.at<float>(best_r, c);
-          pt.intensity = intens_mat.at<float>(best_r, c);
-          edge_cloud.push_back(pt);
         }
       }
 
@@ -396,6 +393,7 @@ private:
   int height_top_gray_, height_bottom_gray_;
   int dilate_ks_;
   bool fill_holes_;
+  double voxel_leaf_size_;
   int img_cols_, img_rows_;
   double horiz_min_rad_, vert_max_rad_;
   double horiz_res_rad_, vert_res_rad_;
