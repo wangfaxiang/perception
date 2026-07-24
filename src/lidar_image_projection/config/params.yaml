@@ -1,17 +1,18 @@
-# E1 固态雷达点云投影参数
+# E1 固态雷达点云投影参数（1200×144）
 #
 # 雷达规格:
-#   水平视场角: 120° (-60° ~ +60°)
-#   垂直视场角: 90°  (-45° ~ +45°)
+#   水平视场角: 120° (-60° ~ +60°), 分辨率 0.1° → 1200 列
+#   垂直视场角: 90°  (-45° ~ +45°), 线数 144 → 144 行
 lidar_image_projection:
   ros__parameters:
     # 输入点云话题
     input_topic: "/rslidar_points"
 
     # 输出图像话题
-    range_image_topic: "/lidar_range_image"
-    intensity_image_topic: "/lidar_intensity_image"
     height_image_topic: "/lidar_height_image"
+    dilated_height_image_topic: "/lidar_dilated_height_image"
+    edge_image_topic: "/lidar_edge_image"
+    edge_cloud_topic: "/lidar_edge_cloud"
 
     # 坐标系
     frame_id: "rslidar"
@@ -20,22 +21,28 @@ lidar_image_projection:
     horiz_fov_deg: 120.0
     vert_fov_deg: 90.0
 
-    # 图像分辨率 (度/像素) - 越小图像越大
-    horiz_resolution_deg: 0.2   # 120/0.2 = 600 列
-    vert_resolution_deg: 0.2    # 90/0.2 = 450 行
+    # 图像分辨率: 1200×144
+    horiz_resolution_deg: 0.1    # 120°/0.1 = 1200 列
+    vert_resolution_deg: 0.625   # 90°/0.625 = 144 行
 
     # 距离范围 (米)
     max_range: 100.0
     min_range: 0.2
 
-    # 高度映射 (Z轴): z=0→灰度255, z=-10m→灰度120, 其余→0
-    height_top: 0.0      # z上限（m），映射到灰度255
-    height_bottom: -10.0  # z下限（m），映射到灰度120
-    height_top_gray: 255  # z上限对应灰度值
-    height_bottom_gray: 120  # z下限对应灰度值
+    # 高度映射 (Z轴): z=0→灰度255, z=-10m→灰度120
+    height_top: 0.0
+    height_bottom: -10.0
+    height_top_gray: 255
+    height_bottom_gray: 120
 
-    # 形态学膨胀核大小 (0=不填充, 3=填充1像素间隙, 5=填充2像素间隙)
-    dilate_kernel_size: 10
+    # 形态学膨胀核大小 (0=不填充, 3=填充1像素间隙)
+    dilate_kernel_size: 3
 
-    # 图像修补填充所有空洞 (true=连续图像, 适合边缘提取)
-    fill_holes: false
+    # 图像修补填充所有空洞
+    fill_holes: true
+
+    # 边缘检测（防矿卡坠坡）
+    enable_edge_detection: true
+    canny_low_thresh: 120
+    canny_high_thresh: 300
+    edge_min_height_diff: 0.3
