@@ -25,9 +25,11 @@
 
 #include <string>
 #include <vector>
+#include <map>
 #include <unordered_map>
 #include <algorithm>
 #include <cmath>
+#include <filesystem>
 
 class LidarImageProjection : public rclcpp::Node
 {
@@ -44,8 +46,8 @@ public:
     // E1 雷达视场角参数（1200×144）
     this->declare_parameter("horiz_fov_deg", 120.0);    // 水平视场角（度）
     this->declare_parameter("vert_fov_deg", 90.0);       // 垂直视场角（度）
-    this->declare_parameter("horiz_resolution_deg", 0.1);  // 水平分辨率 120°/1200=0.1°/像素
-    this->declare_parameter("vert_resolution_deg", 0.625); // 垂直分辨率 90°/144=0.625°/像素
+    this->declare_parameter("horiz_resolution_deg", 1.0);  // 水平分辨率 120°/1200=0.1°/像素
+    this->declare_parameter("vert_resolution_deg", 1.0); // 垂直分辨率 90°/144=0.625°/像素
 
     // 距离归一化参数
     this->declare_parameter("max_range", 100.0);         // 最大距离（米）
@@ -72,6 +74,9 @@ public:
     this->declare_parameter("canny_high_thresh", 300);  // Canny 高阈值
     this->declare_parameter("edge_min_height_diff", 0.3);  // 最小高度差（米），大于此值才认为是边缘
 
+    // 本地保存参数
+    this->declare_parameter("save_dir", "./");  // 图片保存目录（当前目录）
+
     // 读取参数
     std::string input_topic, height_topic, dilated_height_topic, edge_topic, edge_cloud_topic;
     this->get_parameter("input_topic", input_topic);
@@ -97,15 +102,16 @@ public:
     this->get_parameter("enable_edge_detection", enable_edge_);
     this->get_parameter("canny_low_thresh", canny_low_);
     this->get_parameter("canny_high_thresh", canny_high_);
-    this->get_parameter("edge_min_height_diff", edge_min_hdiff_);
+    this->get_parameter("save_dir", save_dir_);
 
     // 计算图像尺寸
     img_cols_ = static_cast<int>(horiz_fov_deg_ / horiz_res_deg_);
     img_rows_ = static_cast<int>(vert_fov_deg_ / vert_res_deg_);
 
     // 预计算弧度值
-    horiz_min_rad_ = -horiz_fov_deg_ / 2.0 * M_PI / 180.0;
-    vert_max_rad_  =  vert_fov_deg_ / 2.0 * M_PI / 180.0;
+    horiz_min_rad_ = -horiz_fov_deg_ / 2.0 * M_PI / 180.0;  // -60° (下界)
+    vert_max_rad_  =  vert_fov_deg_ / 2.0 * M_PI / 180.0;  // +45° (上界)
+    vert_min_rad_  = -vert_fov_deg_ / 2.0 * M_PI / 180.0;  // -45° (下界)
     horiz_res_rad_ = horiz_res_deg_ * M_PI / 180.0;
     vert_res_rad_  = vert_res_deg_ * M_PI / 180.0;
 
@@ -130,9 +136,6 @@ public:
         edge_topic, 10);
       pub_edge_cloud_ = this->create_publisher<sensor_msgs::msg::PointCloud2>(
         edge_cloud_topic, 10);
-      RCLCPP_INFO(this->get_logger(),
-        "Edge detection ENABLED: Canny[%d,%d], min_height_diff=%.2fm",
-        canny_low_, canny_high_, edge_min_hdiff_);
     } else {
       RCLCPP_INFO(this->get_logger(), "Edge detection DISABLED.");
     }
@@ -163,17 +166,15 @@ private:
 
     // 创建图像 (CV_32FC1 用于累积)
     cv::Mat height_mat = cv::Mat::zeros(img_rows_, img_cols_, CV_32FC1);
-    cv::Mat x_mat      = cv::Mat::zeros(img_rows_, img_cols_, CV_32FC1);
-    cv::Mat y_mat      = cv::Mat::zeros(img_rows_, img_cols_, CV_32FC1);
-    cv::Mat intens_mat = cv::Mat::zeros(img_rows_, img_cols_, CV_32FC1);
+    // cv::Mat intens_mat = cv::Mat::zeros(img_rows_, img_cols_, CV_32FC1);
     cv::Mat count_mat  = cv::Mat::zeros(img_rows_, img_cols_, CV_32FC1);
 
-    // 有效性掩码: +1.0 = 有点云数据, -1.0 = 无数据（空洞）
-    cv::Mat valid_mask(img_rows_, img_cols_, CV_32FC1, cv::Scalar(-1.0f));
-
     // 像素索引 → 三维点坐标的映射（key = row * img_cols_ + col，扁平化索引）
-    // 同一像素多个点时只保留 z 最低的点，与 height_mat 保持一致
+    // 同一像素多个点时只保留 z 最高的点，与 height_mat 保持一致
     std::unordered_map<int, pcl::PointXYZI> pixel_to_point;
+
+    // 像素索引 → 该像素对应的所有三维点（用于需要全部点的场景）
+    std::map<int, std::vector<pcl::PointXYZI>> pixel_to_all_points;
 
     for (const auto& pt : cloud->points) {
       float range = std::sqrt(pt.x * pt.x + pt.y * pt.y + pt.z * pt.z);
@@ -190,7 +191,7 @@ private:
       float horiz_angle = std::atan2(pt.y, pt.x);
 
       // 视场角过滤
-      if (vert_angle > vert_max_rad_ || vert_angle < vert_max_rad_ - vert_fov_deg_ * M_PI / 180.0) {
+      if (vert_angle > vert_max_rad_ || vert_angle < vert_min_rad_) {
         continue;
       }
       if (horiz_angle < horiz_min_rad_ || horiz_angle > -horiz_min_rad_) {
@@ -206,18 +207,57 @@ private:
         continue;
       }
 
-      // 同一像素多个点时，只保留z最低的那个点
-      float& cnt = count_mat.at<float>(row, col);
-      if (cnt == 0 || pt.z > height_mat.at<float>(row, col)) {
-        height_mat.at<float>(row, col) = pt.z;
-        x_mat.at<float>(row, col)      = pt.x;
-        y_mat.at<float>(row, col)      = pt.y;
-        intens_mat.at<float>(row, col) = pt.intensity;
-        // 同步更新像素→三维点映射
-        pixel_to_point[row * img_cols_ + col] = pt;
-      }
-      cnt += 1.0f;
+      // 统计该像素点数并存储所有三维点（后续统一处理）
+      count_mat.at<float>(row, col) += 1.0f;
+      pixel_to_all_points[row * img_cols_ + col].push_back(pt);
     }
+
+    // ===== 逐像素处理：按垂直角排序，取相邻z差值最大处较小角度的z =====
+    for (auto& [pixel_idx, points] : pixel_to_all_points) {
+      if (points.empty()) continue;
+
+      int r = pixel_idx / img_cols_;
+      int c = pixel_idx % img_cols_;
+
+      pcl::PointXYZI chosen;
+
+      if (points.size() == 1) {
+        // 单点：直接取
+        chosen = points[0];
+      } else {
+        // 按垂直角（asin(z/range)）由大到小排列
+        std::sort(points.begin(), points.end(),
+          [](const pcl::PointXYZI& a, const pcl::PointXYZI& b) {
+            float ra = std::sqrt(a.x * a.x + a.y * a.y + a.z * a.z);
+            float rb = std::sqrt(b.x * b.x + b.y * b.y + b.z * b.z);
+            float va = std::asin(a.z / ra);
+            float vb = std::asin(b.z / rb);
+            return va > vb;  // 降序：垂直角大的在前
+          });
+
+        // 计算相邻三维点的 z 轴差值，找到差值绝对值最大的两个点
+        float max_zdiff = -1.0f;
+        size_t max_idx = 0;
+        for (size_t i = 0; i < points.size() - 1; ++i) {
+          float zdiff = std::abs(points[i].z - points[i + 1].z);
+          if (zdiff > max_zdiff) {
+            max_zdiff = zdiff;
+            max_idx = i;
+          }
+        }
+        // 取这两个点中垂直角较小的点（排序靠后的点，即 i+1）
+        chosen = points[max_idx + 1];
+      }
+
+      height_mat.at<float>(r, c) = chosen.z;
+      // x_mat.at<float>(r, c)      = chosen.x;
+      // y_mat.at<float>(r, c)      = chosen.y;
+      // intens_mat.at<float>(r, c) = chosen.intensity;
+      pixel_to_point[pixel_idx]  = chosen;
+    }
+
+    // 有效性掩码: +1.0 = 有点云数据, -1.0 = 无数据（空洞）
+    cv::Mat valid_mask(img_rows_, img_cols_, CV_32FC1, cv::Scalar(-1.0f));
 
     // 生成高度图像 (8-bit)
     cv::Mat height_img = cv::Mat::zeros(img_rows_, img_cols_, CV_8UC1);
@@ -244,6 +284,10 @@ private:
     // 保存原始高度图（膨胀前）
     cv::Mat height_img_raw = height_img.clone();
 
+    // 确保保存目录存在
+    // std::filesystem::create_directories(save_dir_);
+    // cv::imwrite(save_dir_ + "height_raw.png", height_img_raw);
+
     // 形态学膨胀填充间隙
     if (dilate_ks_ > 0) {
       cv::Mat kernel = cv::getStructuringElement(
@@ -255,7 +299,12 @@ private:
       valid_mask.setTo(1.0f, valid_mask > -0.5f);  // 膨胀后 > -0.5 的设为 +1
     }
 
+    // 保存膨胀图（仅第一次膨胀后，修补前）
+    // cv::Mat height_img_dilated_only = height_img.clone();
+    // cv::imwrite(save_dir_ + "height_dilated.png", height_img_dilated_only);
+
     // 图像修补：用更大膨胀填充所有剩余空洞
+    // fill_holes_ = false;  // 默认不填充所有空洞，避免过度膨胀
     if (fill_holes_) {
       cv::Mat kernel2 = cv::getStructuringElement(
         cv::MORPH_ELLIPSE, cv::Size(9, 9));
@@ -265,6 +314,9 @@ private:
       cv::dilate(valid_mask, valid_mask, kernel2);
       valid_mask.setTo(1.0f, valid_mask > -0.5f);
     }
+
+    // 保存修补图（所有膨胀/修补处理后的最终高度图）
+    // cv::imwrite(save_dir_ + "height_repaired.png", height_img);
 
     // 保存膨胀后高度图（膨胀填充后）
     cv::Mat height_img_dilated = height_img.clone();
@@ -289,7 +341,7 @@ private:
       }
 
       // 2. 形态学去噪：先闭运算连接断边
-      cv::Mat kernel3 = cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(3, 3));
+      cv::Mat kernel3 = cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(5, 5));
       cv::morphologyEx(canny_edges, canny_edges, cv::MORPH_CLOSE, kernel3);
 
       // 3. 去除小面积噪点（< 15 像素）
@@ -317,16 +369,19 @@ private:
 
       edge_img = height_bgr;
 
-      // ===== 5. 提取边缘点云：通过 pixel_to_point 映射直接反查三维点 =====
+      // ===== 5. 提取边缘点云：通过 pixel_to_point 获取边缘像素的代表点 =====
       pcl::PointCloud<pcl::PointXYZI> edge_cloud;
 
       for (int r = 0; r < img_rows_; ++r) {
         for (int c = 0; c < img_cols_; ++c) {
           if (clean_edges.at<uint8_t>(r, c) == 0) continue;
 
-          auto it = pixel_to_point.find((r) * img_cols_ + c);
+          auto it = pixel_to_point.find((r + 6) * img_cols_ + c);
           if (it != pixel_to_point.end()) {
-            edge_cloud.push_back(it->second);
+            // z < -2 的点是坡下的点，不作为坡上的边缘，过滤掉
+            if (it->second.z >= -2.0f) {
+              edge_cloud.push_back(it->second);
+            }
           }
         }
       }
@@ -395,13 +450,16 @@ private:
   bool fill_holes_;
   double voxel_leaf_size_;
   int img_cols_, img_rows_;
-  double horiz_min_rad_, vert_max_rad_;
+  double horiz_min_rad_, vert_max_rad_, vert_min_rad_;
   double horiz_res_rad_, vert_res_rad_;
 
   // 边缘检测参数
   bool enable_edge_;
   int canny_low_, canny_high_;
-  double edge_min_hdiff_;
+
+  // 本地保存
+  std::string save_dir_;
+
 };
 
 int main(int argc, char ** argv)

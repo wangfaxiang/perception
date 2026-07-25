@@ -43,6 +43,6 @@ lidar_image_projection:
 
     # 边缘检测（防矿卡坠坡）
     enable_edge_detection: true
-    canny_low_thresh: 120
+    canny_low_thresh: 100
     canny_high_thresh: 300
     edge_min_height_diff: 0.3
