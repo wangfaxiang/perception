@@ -29,6 +29,7 @@
 #include <unordered_map>
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <filesystem>
 
 class LidarImageProjection : public rclcpp::Node
@@ -53,11 +54,9 @@ public:
     this->declare_parameter("max_range", 100.0);         // 最大距离（米）
     this->declare_parameter("min_range", 0.2);           // 最小距离（米）
 
-    // 高度映射参数: z 从 height_top→gray_top, 到 height_bottom→gray_bottom
+    // 高度映射参数: z 归一化到 0-255（height_top→255, height_bottom→0）
     this->declare_parameter("height_top", 0.0);
     this->declare_parameter("height_bottom", -10.0);
-    this->declare_parameter("height_top_gray", 255);
-    this->declare_parameter("height_bottom_gray", 0);
 
     // 后处理参数
     this->declare_parameter("dilate_kernel_size", 3);    // 膨胀核大小（0=禁用）
@@ -94,8 +93,6 @@ public:
     this->get_parameter("min_range", min_range_);
     this->get_parameter("height_top", height_top_);
     this->get_parameter("height_bottom", height_bottom_);
-    this->get_parameter("height_top_gray", height_top_gray_);
-    this->get_parameter("height_bottom_gray", height_bottom_gray_);
     this->get_parameter("dilate_kernel_size", dilate_ks_);
     this->get_parameter("fill_holes", fill_holes_);
     this->get_parameter("voxel_leaf_size", voxel_leaf_size_);
@@ -269,13 +266,11 @@ private:
           // 标记为有效像素 (+1)
           valid_mask.at<float>(r, c) = 1.0f;
 
-          // 高度映射: z∈[height_bottom, height_top] → 灰度 [gray_bottom, gray_top]
+          // 高度映射: z∈[height_bottom, 0] → 灰度 0-255（归一化），最高点Z限制在0
           float h = height_mat.at<float>(r, c);
-          int gray = 0;
-          if (h <= height_top_ && h >= height_bottom_) {
-            float t = (height_top_ - h) / (height_top_ - height_bottom_);
-            gray = static_cast<int>(height_top_gray_ - t * (height_top_gray_ - height_bottom_gray_));
-          }
+          float h_clamped = std::max(static_cast<float>(height_bottom_), std::min(0.0f, h));
+          float t = -h_clamped / (-height_bottom_);
+          int gray = static_cast<int>(255.0f * t);
           height_img.at<uint8_t>(r, c) = static_cast<uint8_t>(gray);
         }
       }
@@ -307,7 +302,7 @@ private:
     // fill_holes_ = false;  // 默认不填充所有空洞，避免过度膨胀
     if (fill_holes_) {
       cv::Mat kernel2 = cv::getStructuringElement(
-        cv::MORPH_ELLIPSE, cv::Size(9, 9));
+        cv::MORPH_ELLIPSE, cv::Size(5, 5));
       cv::dilate(height_img, height_img, kernel2);
 
       // 膨胀填充的像素标记为有效 (+1)
@@ -332,13 +327,13 @@ private:
       cv::Canny(height_img, canny_edges, canny_low_, canny_high_);
 
       // 1.5 屏蔽无效像素 (-1) 上的边缘：只保留有效像素 (+1) 上的边缘
-      {
-        cv::Mat edge_mask(img_rows_, img_cols_, CV_8UC1);
-        for (int r = 0; r < img_rows_; ++r)
-          for (int c = 0; c < img_cols_; ++c)
-            edge_mask.at<uint8_t>(r, c) = (valid_mask.at<float>(r, c) > 0.0f) ? 255 : 0;
-        cv::bitwise_and(canny_edges, edge_mask, canny_edges);
-      }
+      // {
+      //   cv::Mat edge_mask(img_rows_, img_cols_, CV_8UC1);
+      //   for (int r = 0; r < img_rows_; ++r)
+      //     for (int c = 0; c < img_cols_; ++c)
+      //       edge_mask.at<uint8_t>(r, c) = (valid_mask.at<float>(r, c) > 0.0f) ? 255 : 0;
+      //   cv::bitwise_and(canny_edges, edge_mask, canny_edges);
+      // }
 
       // 2. 形态学去噪：先闭运算连接断边
       cv::Mat kernel3 = cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(5, 5));
@@ -376,15 +371,32 @@ private:
         for (int c = 0; c < img_cols_; ++c) {
           if (clean_edges.at<uint8_t>(r, c) == 0) continue;
 
-          auto it = pixel_to_point.find((r + 6) * img_cols_ + c);
+          auto it = pixel_to_point.find((r - 2) * img_cols_ + c);
           if (it != pixel_to_point.end()) {
             // z < -2 的点是坡下的点，不作为坡上的边缘，过滤掉
-            if (it->second.z >= -2.0f) {
+            // if (it->second.z >= -2.0f) {
               edge_cloud.push_back(it->second);
-            }
+            // }
           }
         }
       }
+
+      // 查找边缘点云中最远点和最近点
+      // if (!edge_cloud.empty()) {
+      //   float min_range = std::numeric_limits<float>::max();
+      //   float max_range = 0.0f;
+      //   pcl::PointXYZI nearest_pt, farthest_pt;
+      //   for (const auto& pt : edge_cloud) {
+      //     float r = std::sqrt(pt.x * pt.x + pt.y * pt.y + pt.z * pt.z);
+      //     if (r < min_range) { min_range = r; nearest_pt = pt; }
+      //     if (r > max_range) { max_range = r; farthest_pt = pt; }
+      //   }
+      //   RCLCPP_INFO(this->get_logger(),
+      //     "Edge cloud: %zu pts, nearest: (%.2f,%.2f,%.2f) range=%.2fm, farthest: (%.2f,%.2f,%.2f) range=%.2fm",
+      //     edge_cloud.size(),
+      //     nearest_pt.x, nearest_pt.y, nearest_pt.z, min_range,
+      //     farthest_pt.x, farthest_pt.y, farthest_pt.z, max_range);
+      // }
 
       // 发布边缘点云
       if (!edge_cloud.empty()) {
@@ -445,7 +457,6 @@ private:
   double horiz_res_deg_, vert_res_deg_;
   double max_range_, min_range_;
   double height_top_, height_bottom_;
-  int height_top_gray_, height_bottom_gray_;
   int dilate_ks_;
   bool fill_holes_;
   double voxel_leaf_size_;
