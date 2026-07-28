@@ -1,0 +1,53 @@
+# E1 固态雷达点云投影参数（1200×144）
+#
+# 雷达规格:
+#   水平视场角: 120° (-60° ~ +60°), 分辨率 0.1° → 1200 列
+#   垂直视场角: 90°  (-45° ~ +45°), 线数 144 → 144 行
+pothole_detection:
+  ros__parameters:
+    # 输入点云话题
+    input_topic: "/rslidar_points"
+
+    # 输出图像话题
+    height_image_topic: "/pothole_height_image"
+    dilated_height_image_topic: "/pothole_dilated_height_image"
+    edge_image_topic: "/pothole_edge_image"
+    edge_cloud_topic: "/pothole_edge_cloud"
+
+    # 坐标系
+    frame_id: "rslidar"
+
+    # 视场角参数 (度)
+    horiz_fov_deg: 120.0
+    vert_fov_deg: 90.0
+
+    # 图像分辨率: 1200×144
+    horiz_resolution_deg: 0.1    # 120°/0.1 = 1200 列
+    vert_resolution_deg: 0.625   # 90°/0.625 = 144 行
+
+    # 距离范围 (米)
+    max_range: 100.0
+    min_range: 0.2
+
+    # 高度映射 (Z轴): z=0→灰度255, z=-10m→灰度120
+    height_top: 0.0
+    height_bottom: -10.0
+    height_top_gray: 255
+    height_bottom_gray: 120
+
+    # 形态学膨胀核大小 (0=不填充, 3=填充1像素间隙)
+    dilate_kernel_size: 3
+
+    # 图像修补填充所有空洞
+    fill_holes: true
+
+    # 坑洞检测（地面凹陷识别）
+    enable_edge_detection: true
+    canny_low_thresh: 100
+    canny_high_thresh: 300
+    edge_min_height_diff: 0.3
+
+    # 坑洞检测参数
+    pothole_min_area: 50       # 最小坑洞面积（像素）
+    pothole_max_area: 5000     # 最大坑洞面积（像素）
+    pothole_min_depth: 0.1     # 最小坑洞深度（米）

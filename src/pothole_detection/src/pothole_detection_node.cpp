@@ -1,13 +1,13 @@
 /**
- * @file lidar_image_projection_node.cpp
- * @brief 将速腾聚创E1固态雷达点云投影为高度图像（1200×144），并提取高度边缘（防矿卡坠坡）
+ * @file pothole_detection_node.cpp
+ * @brief 将速腾聚创E1固态雷达点云投影为高度图像（1200×144），识别地面坑洞
  *
  * E1雷达规格:
  *   - 水平视场角: 120° (-60° ~ +60°), 分辨率 0.1° → 1200 列
  *   - 垂直视场角: 90°  (-45° ~ +45°), 线数 144 → 144 行
  *
- * 边缘检测: 对高度图像做Canny边缘检测，将高度突变处（边坡边缘）标记为红色，
- *           叠加在高度图上发布，用于防止矿卡坠坡。
+ * 坑洞识别: 对高度图像进行分析，检测地面凹陷区域（坑洞），
+ *           发布坑洞位置和深度信息。
  *
  * 参考: LeGO-LOAM imageProjection.cpp 的点云投影思路
  */
@@ -32,16 +32,16 @@
 #include <limits>
 #include <filesystem>
 
-class LidarImageProjection : public rclcpp::Node
+class PotholeDetection : public rclcpp::Node
 {
 public:
-  LidarImageProjection()
-  : Node("lidar_image_projection")
+  PotholeDetection()
+  : Node("pothole_detection")
   {
     // 声明参数
     this->declare_parameter("input_topic", "/rslidar_points");
-    this->declare_parameter("height_image_topic", "/lidar_height_image");
-    this->declare_parameter("dilated_height_image_topic", "/lidar_dilated_height_image");
+    this->declare_parameter("height_image_topic", "/pothole_height_image");
+    this->declare_parameter("dilated_height_image_topic", "/pothole_dilated_height_image");
     this->declare_parameter("frame_id", "rslidar");
 
     // E1 雷达视场角参数（1200×144）
@@ -54,7 +54,7 @@ public:
     this->declare_parameter("max_range", 100.0);         // 最大距离（米）
     this->declare_parameter("min_range", 0.2);           // 最小距离（米）
 
-    // 高度映射参数: z 归一化（height_top(0m)→灰度255, height_bottom(-50m)→灰度122）
+    // 高度映射参数: z 归一化（height_top(0m)→灰度255, height_bottom(-50m)→灰度0）
     this->declare_parameter("height_top", 0.0);
     this->declare_parameter("height_bottom", -50.0);
 
@@ -62,12 +62,18 @@ public:
     this->declare_parameter("dilate_kernel_size", 3);    // 膨胀核大小（0=禁用）
     this->declare_parameter("fill_holes", true);         // 填充所有空洞
 
+    // 滤波去噪参数（膨胀补洞之后执行）
+    this->declare_parameter("enable_filter", true);       // 是否启用滤波
+    this->declare_parameter("filter_type", "median");    // 滤波类型: "median"(中值), "gaussian"(高斯), "bilateral"(双边)
+    this->declare_parameter("filter_ksize", 3);           // 滤波核大小（奇数，>=3）
+    this->declare_parameter("filter_sigma", 1.0);         // 高斯/双边滤波 sigma（中值滤波时忽略）
+
     // 体素降采样参数
     this->declare_parameter("voxel_leaf_size", 0.03);     // 体素栅格边长（米），0=禁用
 
     // 边缘检测参数（防矿卡坠坡）
-    this->declare_parameter("edge_image_topic", "/lidar_edge_image");  // 边缘图像话题
-    this->declare_parameter("edge_cloud_topic", "/lidar_edge_cloud");  // 边缘点云话题
+    this->declare_parameter("edge_image_topic", "/pothole_edge_image");  // 边缘图像话题
+    this->declare_parameter("edge_cloud_topic", "/pothole_edge_cloud");  // 边缘点云话题
     this->declare_parameter("enable_edge_detection", true);            // 是否启用边缘检测
     this->declare_parameter("canny_low_thresh", 120);    // Canny 低阈值
     this->declare_parameter("canny_high_thresh", 300);  // Canny 高阈值
@@ -95,6 +101,10 @@ public:
     this->get_parameter("height_bottom", height_bottom_);
     this->get_parameter("dilate_kernel_size", dilate_ks_);
     this->get_parameter("fill_holes", fill_holes_);
+    this->get_parameter("enable_filter", enable_filter_);
+    this->get_parameter("filter_type", filter_type_);
+    this->get_parameter("filter_ksize", filter_ksize_);
+    this->get_parameter("filter_sigma", filter_sigma_);
     this->get_parameter("voxel_leaf_size", voxel_leaf_size_);
     this->get_parameter("enable_edge_detection", enable_edge_);
     this->get_parameter("canny_low_thresh", canny_low_);
@@ -119,7 +129,7 @@ public:
     // 订阅点云
     sub_cloud_ = this->create_subscription<sensor_msgs::msg::PointCloud2>(
       input_topic, rclcpp::SensorDataQoS(),
-      std::bind(&LidarImageProjection::cloudCallback, this, std::placeholders::_1));
+      std::bind(&PotholeDetection::cloudCallback, this, std::placeholders::_1));
 
     // 发布图像（高度图 → 膨胀高度图 → 边缘图）
     pub_height_img_ = this->create_publisher<sensor_msgs::msg::Image>(
@@ -137,7 +147,7 @@ public:
       RCLCPP_INFO(this->get_logger(), "Edge detection DISABLED.");
     }
 
-    RCLCPP_INFO(this->get_logger(), "LidarImageProjection node started.");
+    RCLCPP_INFO(this->get_logger(), "PotholeDetection node started.");
   }
 
 private:
@@ -177,9 +187,12 @@ private:
       float range = std::sqrt(pt.x * pt.x + pt.y * pt.y + pt.z * pt.z);
 
       // 距离过滤
-      if (range < min_range_ || range > max_range_ || pt.z < -3.0) {
+      if (range < min_range_ || range > max_range_) {
         continue;
       }
+      if (pt.z < -2.0) {  // z < -2 的点是坡下的点，不作为坡上的边缘，过滤掉
+        continue;
+      }      
 
       // 计算垂直角: asin(z / range)
       float vert_angle = std::asin(pt.z / range);
@@ -266,10 +279,10 @@ private:
           // 标记为有效像素 (+1)
           valid_mask.at<float>(r, c) = 1.0f;
 
-          // 高度映射: z∈[height_bottom, 0] → z=0→灰度255, z=height_bottom→灰度122
+          // 高度映射: z∈[height_bottom, height_top] → z=height_top→灰度255, z=height_bottom→灰度0
           float h = height_mat.at<float>(r, c);
-          float h_clamped = std::max(static_cast<float>(height_bottom_), std::min(0.0f, h));
-          int gray = static_cast<int>(255.0f - 127.0f * h_clamped / static_cast<float>(height_bottom_));
+          float h_clamped = std::max(static_cast<float>(height_bottom_), std::min(static_cast<float>(height_top_), h));
+          int gray = static_cast<int>(255.0f * (h_clamped - static_cast<float>(height_bottom_)) / (static_cast<float>(height_top_) - static_cast<float>(height_bottom_)));
           height_img.at<uint8_t>(r, c) = static_cast<uint8_t>(gray);
         }
       }
@@ -298,10 +311,10 @@ private:
     // cv::imwrite(save_dir_ + "height_dilated.png", height_img_dilated_only);
 
     // 图像修补：用更大膨胀填充所有剩余空洞
-    // fill_holes_ = false;  // 默认不填充所有空洞，避免过度膨胀
+    fill_holes_ = false;  // 默认不填充所有空洞，避免过度膨胀
     if (fill_holes_) {
       cv::Mat kernel2 = cv::getStructuringElement(
-        cv::MORPH_ELLIPSE, cv::Size(5, 5));
+        cv::MORPH_ELLIPSE, cv::Size(3, 3));
       cv::dilate(height_img, height_img, kernel2);
 
       // 膨胀填充的像素标记为有效 (+1)
@@ -312,7 +325,25 @@ private:
     // 保存修补图（所有膨胀/修补处理后的最终高度图）
     // cv::imwrite(save_dir_ + "height_repaired.png", height_img);
 
-    // 保存膨胀后高度图（膨胀填充后）
+    // ===== 滤波去噪：膨胀补洞后，对高度图做平滑去噪 =====
+    if (enable_filter_) {
+      int ks = filter_ksize_;
+      if (ks % 2 == 0) ks += 1;  // 确保核大小为奇数
+      if (ks < 3) ks = 3;
+
+      if (filter_type_ == "median") {
+        // 中值滤波：有效去除椒盐噪声/孤立噪点，同时保护边缘
+        cv::medianBlur(height_img, height_img, ks);
+      } else if (filter_type_ == "gaussian") {
+        // 高斯滤波：平滑去噪，边缘会被模糊
+        cv::GaussianBlur(height_img, height_img, cv::Size(ks, ks), filter_sigma_);
+      } else if (filter_type_ == "bilateral") {
+        // 双边滤波：边缘保持平滑，适合需要保留边缘的场景
+        cv::bilateralFilter(height_img, height_img, ks, filter_sigma_, filter_sigma_);
+      }
+    }
+
+    // 保存膨胀后高度图（膨胀填充+滤波后）
     cv::Mat height_img_dilated = height_img.clone();
 
     // 时间戳（图像和点云共用）
@@ -370,7 +401,7 @@ private:
         for (int c = 0; c < img_cols_; ++c) {
           if (clean_edges.at<uint8_t>(r, c) == 0) continue;
 
-          auto it = pixel_to_point.find((r+3) * img_cols_ + c);
+          auto it = pixel_to_point.find((r+1) * img_cols_ + c);
           if (it != pixel_to_point.end()) {
             // z < -2 的点是坡下的点，不作为坡上的边缘，过滤掉
             // if (it->second.z >= -2.0f || it->second.z <= -1.0f) {
@@ -458,6 +489,10 @@ private:
   double height_top_, height_bottom_;
   int dilate_ks_;
   bool fill_holes_;
+  bool enable_filter_;
+  std::string filter_type_;
+  int filter_ksize_;
+  double filter_sigma_;
   double voxel_leaf_size_;
   int img_cols_, img_rows_;
   double horiz_min_rad_, vert_max_rad_, vert_min_rad_;
@@ -475,7 +510,7 @@ private:
 int main(int argc, char ** argv)
 {
   rclcpp::init(argc, argv);
-  auto node = std::make_shared<LidarImageProjection>();
+  auto node = std::make_shared<PotholeDetection>();
   rclcpp::spin(node);
   rclcpp::shutdown();
   return 0;

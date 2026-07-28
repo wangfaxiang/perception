@@ -56,7 +56,7 @@ CenterpointRos::CenterpointRos() : rclcpp::Node("centerpointros")
     pointsubscribe = this->create_subscription<sensor_msgs::msg::PointCloud2>("/rslidar_points", 1,std::bind(&CenterpointRos::onPointCloud, this, _1));
     subscribe_ui2Ros = this->create_subscription<std_msgs::msg::String>("/ui2ros", 10,std::bind(&CenterpointRos::onUi2Ros, this, _1));
     publisher_pose = this->create_publisher<box_msg::msg::Boxs>("/centerpoint_boxs_no_velocity", 1);
-    conf_thres=0.2;
+    conf_thres=0.4;
     detect="false";
 }
 void CenterpointRos::onUi2Ros(const std_msgs::msg::String::ConstSharedPtr input_msg){
@@ -74,9 +74,9 @@ void CenterpointRos::onPointCloud(const sensor_msgs::msg::PointCloud2::ConstShar
         RCLCPP_WARN(this->get_logger(), "topic has not pointcloud !!!");
         return;
     }
-    if(detect=="false"){
-        return;
-    }
+    // if(detect=="false"){
+    //     return;
+    // }
     pcl::PointCloud<pcl::PointXYZI>::Ptr cloud(new pcl::PointCloud<pcl::PointXYZI>);
     pcl::fromROSMsg(*input_msg, *cloud);
     unsigned int length=cloud->width*cloud->height*5*sizeof(float);
@@ -101,7 +101,7 @@ void CenterpointRos::onPointCloud(const sensor_msgs::msg::PointCloud2::ConstShar
     centerpoint->doinfer((void *)d_points, points_num, stream);
     box_msg::msg::Boxs boxarray;
     for (const auto box : centerpoint->nms_pred_){
-        if (box.score>conf_thres){
+        if (box.score>conf_thres && box.id == 8){  // 8 = pedestrian
         box_msg::msg::Box boxs;
         boxs.x = box.x;
         boxs.y = box.y;
@@ -118,6 +118,7 @@ void CenterpointRos::onPointCloud(const sensor_msgs::msg::PointCloud2::ConstShar
         }
     }
     boxarray.header.stamp=this->get_clock() -> now();
+    boxarray.header.frame_id = "rslidar";
     publisher_pose->publish(boxarray);
 
     // RCLCPP_INFO(this->get_logger(), "done");
