@@ -171,8 +171,8 @@ private:
       cloud = cloud_filtered;
     }
 
-    // 创建图像 (CV_32FC1 用于累积)
-    cv::Mat height_mat = cv::Mat::zeros(img_rows_, img_cols_, CV_32FC1);
+    // 创建三通道图像 (CV_32FC3): channel[0]=B(0), channel[1]=G(z), channel[2]=R(range)
+    cv::Mat height_mat = cv::Mat::zeros(img_rows_, img_cols_, CV_32FC3);
     // cv::Mat intens_mat = cv::Mat::zeros(img_rows_, img_cols_, CV_32FC1);
     cv::Mat count_mat  = cv::Mat::zeros(img_rows_, img_cols_, CV_32FC1);
 
@@ -190,9 +190,12 @@ private:
       if (range < min_range_ || range > max_range_) {
         continue;
       }
-      if (pt.z < -2.0) {  // z < -2 的点是坡下的点，不作为坡上的边缘，过滤掉
-        continue;
-      }      
+      // if (range < min_range_ || range > 10.0) {
+      //   continue;
+      // }      
+      // if (pt.z < -5.0 || pt.z > 5.0) {  // z < -2 的点是坡下的点，不作为坡上的边缘，过滤掉
+      //   continue;
+      // }      
 
       // 计算垂直角: asin(z / range)
       float vert_angle = std::asin(pt.z / range);
@@ -259,10 +262,10 @@ private:
         chosen = points[max_idx + 1];
       }
 
-      height_mat.at<float>(r, c) = chosen.z;
-      // x_mat.at<float>(r, c)      = chosen.x;
-      // y_mat.at<float>(r, c)      = chosen.y;
-      // intens_mat.at<float>(r, c) = chosen.intensity;
+      float range = std::sqrt(chosen.x * chosen.x + chosen.y * chosen.y + chosen.z * chosen.z);
+      height_mat.at<cv::Vec3f>(r, c)[0] = 0.0f;       // B: 未使用
+      height_mat.at<cv::Vec3f>(r, c)[1] = chosen.z;    // G: 高度 z
+      height_mat.at<cv::Vec3f>(r, c)[2] = range;       // R: 距离 range
       pixel_to_point[pixel_idx]  = chosen;
     }
 
@@ -279,17 +282,31 @@ private:
           // 标记为有效像素 (+1)
           valid_mask.at<float>(r, c) = 1.0f;
 
-          // 高度映射: z∈[height_bottom, height_top] → z=height_top→灰度255, z=height_bottom→灰度0
-          float h = height_mat.at<float>(r, c);
-          float h_clamped = std::max(static_cast<float>(height_bottom_), std::min(static_cast<float>(height_top_), h));
-          int gray = static_cast<int>(255.0f * (h_clamped - static_cast<float>(height_bottom_)) / (static_cast<float>(height_top_) - static_cast<float>(height_bottom_)));
+          // 高度映射: z∈[-5, +5] → 灰度0~255
+          float h = height_mat.at<cv::Vec3f>(r, c)[1];  // G 通道 = z
+          float h_clamped = std::max(-5.0f, std::min(5.0f, h));
+          int gray = static_cast<int>(255.0f * (h_clamped + 5.0f) / 10.0f);
           height_img.at<uint8_t>(r, c) = static_cast<uint8_t>(gray);
         }
       }
     }
 
-    // 保存原始高度图（膨胀前）
-    cv::Mat height_img_raw = height_img.clone();
+    // 生成原始高度图（膨胀前）- BGR彩色：R=range, G=z, B=0
+    cv::Mat height_img_raw = cv::Mat::zeros(img_rows_, img_cols_, CV_8UC3);
+    for (int r = 0; r < img_rows_; ++r) {
+      for (int c = 0; c < img_cols_; ++c) {
+        if (count_mat.at<float>(r, c) > 0) {
+          cv::Vec3f& v = height_mat.at<cv::Vec3f>(r, c);
+          float z = v[1];
+          float range_val = v[2];
+          // z: -5~+5 → 0~255, range: 0~10m → 0~255
+          float z_norm = (std::clamp(z, -5.0f, 5.0f) + 5.0f) / 10.0f;
+          float r_norm = std::clamp(range_val, 0.0f, 10.0f) / 10.0f;
+          height_img_raw.at<cv::Vec3b>(r, c) = cv::Vec3b(
+            0, static_cast<uint8_t>(z_norm * 255.0f), static_cast<uint8_t>(r_norm * 255.0f));
+        }
+      }
+    }
 
     // 确保保存目录存在
     // std::filesystem::create_directories(save_dir_);
@@ -314,7 +331,7 @@ private:
     fill_holes_ = false;  // 默认不填充所有空洞，避免过度膨胀
     if (fill_holes_) {
       cv::Mat kernel2 = cv::getStructuringElement(
-        cv::MORPH_ELLIPSE, cv::Size(3, 3));
+        cv::MORPH_ELLIPSE, cv::Size(9, 9));
       cv::dilate(height_img, height_img, kernel2);
 
       // 膨胀填充的像素标记为有效 (+1)
@@ -326,25 +343,37 @@ private:
     // cv::imwrite(save_dir_ + "height_repaired.png", height_img);
 
     // ===== 滤波去噪：膨胀补洞后，对高度图做平滑去噪 =====
-    if (enable_filter_) {
-      int ks = filter_ksize_;
-      if (ks % 2 == 0) ks += 1;  // 确保核大小为奇数
-      if (ks < 3) ks = 3;
+    // if (enable_filter_) {
+    //   int ks = filter_ksize_;
+    //   if (ks % 2 == 0) ks += 1;  // 确保核大小为奇数
+    //   if (ks < 3) ks = 3;
 
-      if (filter_type_ == "median") {
-        // 中值滤波：有效去除椒盐噪声/孤立噪点，同时保护边缘
-        cv::medianBlur(height_img, height_img, ks);
-      } else if (filter_type_ == "gaussian") {
-        // 高斯滤波：平滑去噪，边缘会被模糊
-        cv::GaussianBlur(height_img, height_img, cv::Size(ks, ks), filter_sigma_);
-      } else if (filter_type_ == "bilateral") {
-        // 双边滤波：边缘保持平滑，适合需要保留边缘的场景
-        cv::bilateralFilter(height_img, height_img, ks, filter_sigma_, filter_sigma_);
+    //   if (filter_type_ == "median") {
+    //     // 中值滤波：有效去除椒盐噪声/孤立噪点，同时保护边缘
+    //     cv::medianBlur(height_img, height_img, ks);
+    //   } else if (filter_type_ == "gaussian") {
+    //     // 高斯滤波：平滑去噪，边缘会被模糊
+    //     cv::GaussianBlur(height_img, height_img, cv::Size(ks, ks), filter_sigma_);
+    //   } else if (filter_type_ == "bilateral") {
+    //     // 双边滤波：边缘保持平滑，适合需要保留边缘的场景
+    //     cv::bilateralFilter(height_img, height_img, ks, filter_sigma_, filter_sigma_);
+    //   }
+    // }
+
+    // 生成膨胀后高度图（膨胀填充+滤波后）- BGR彩色：R=range(原始), G=z(处理后), B=0
+    cv::Mat height_img_dilated = cv::Mat::zeros(img_rows_, img_cols_, CV_8UC3);
+    for (int r = 0; r < img_rows_; ++r) {
+      for (int c = 0; c < img_cols_; ++c) {
+        uint8_t g = height_img.at<uint8_t>(r, c);
+        float range_val = 0.0f;
+        if (count_mat.at<float>(r, c) > 0) {
+          range_val = height_mat.at<cv::Vec3f>(r, c)[2];
+        }
+        // range: 0~10m → 0~255
+        float r_norm = std::clamp(range_val, 0.0f, 10.0f) / 10.0f;
+        height_img_dilated.at<cv::Vec3b>(r, c) = cv::Vec3b(0, g, static_cast<uint8_t>(r_norm * 255.0f));
       }
     }
-
-    // 保存膨胀后高度图（膨胀填充+滤波后）
-    cv::Mat height_img_dilated = height_img.clone();
 
     // 时间戳（图像和点云共用）
     auto timestamp = this->now();
@@ -380,14 +409,13 @@ private:
         }
       }
 
-      // 4. 将边缘以红色叠加到高度图上（BGR 格式）
-      cv::Mat height_bgr;
-      cv::cvtColor(height_img, height_bgr, cv::COLOR_GRAY2BGR);
+      // 4. 将边缘以红色叠加到彩色高度图上（BGR: R=range, G=z）
+      cv::Mat height_bgr = height_img_dilated.clone();
 
       for (int r = 0; r < img_rows_; ++r) {
         for (int c = 0; c < img_cols_; ++c) {
           if (clean_edges.at<uint8_t>(r, c) > 0) {
-            height_bgr.at<cv::Vec3b>(r, c) = cv::Vec3b(0, 0, 255);  // 红色
+            height_bgr.at<cv::Vec3b>(r, c) = cv::Vec3b(255, 0, 0);  // 蓝色
           }
         }
       }
@@ -401,7 +429,7 @@ private:
         for (int c = 0; c < img_cols_; ++c) {
           if (clean_edges.at<uint8_t>(r, c) == 0) continue;
 
-          auto it = pixel_to_point.find((r+1) * img_cols_ + c);
+          auto it = pixel_to_point.find((r+0) * img_cols_ + c);
           if (it != pixel_to_point.end()) {
             // z < -2 的点是坡下的点，不作为坡上的边缘，过滤掉
             // if (it->second.z >= -2.0f || it->second.z <= -1.0f) {
@@ -441,16 +469,16 @@ private:
 
     // ===== 发布三种图像 =====
 
-    // 1. 原始高度图（膨胀前，mono8）
+    // 1. 原始高度图（膨胀前，bgr8: R=range, G=z）
     auto raw_msg = cv_bridge::CvImage(
-      std_msgs::msg::Header(), "mono8", height_img_raw).toImageMsg();
+      std_msgs::msg::Header(), "bgr8", height_img_raw).toImageMsg();
     raw_msg->header.stamp = timestamp;
     raw_msg->header.frame_id = frame_id_;
     pub_height_img_->publish(*raw_msg);
 
-    // 2. 膨胀后高度图（膨胀填充后，mono8）
+    // 2. 膨胀后高度图（膨胀填充后，bgr8: R=range, G=z）
     auto dilated_msg = cv_bridge::CvImage(
-      std_msgs::msg::Header(), "mono8", height_img_dilated).toImageMsg();
+      std_msgs::msg::Header(), "bgr8", height_img_dilated).toImageMsg();
     dilated_msg->header.stamp = timestamp;
     dilated_msg->header.frame_id = frame_id_;
     pub_dilated_height_img_->publish(*dilated_msg);
@@ -463,11 +491,9 @@ private:
       edge_msg->header.frame_id = frame_id_;
       pub_edge_img_->publish(*edge_msg);
     } else if (!enable_edge_) {
-      // 边缘检测关闭时也发布高度图（BGR 灰度）
-      cv::Mat height_bgr;
-      cv::cvtColor(height_img_dilated, height_bgr, cv::COLOR_GRAY2BGR);
+      // 边缘检测关闭时也发布高度图（BGR 彩色：R=range, G=z，直接从已生成的BGR图发布）
       auto edge_msg = cv_bridge::CvImage(
-        std_msgs::msg::Header(), "bgr8", height_bgr).toImageMsg();
+        std_msgs::msg::Header(), "bgr8", height_img_dilated).toImageMsg();
       edge_msg->header.stamp = timestamp;
       edge_msg->header.frame_id = frame_id_;
       pub_edge_img_->publish(*edge_msg);

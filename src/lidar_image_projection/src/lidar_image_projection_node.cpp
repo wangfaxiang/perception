@@ -278,12 +278,49 @@ private:
     // 保存原始高度图（膨胀前）
     cv::Mat height_img_raw = height_img.clone();
 
+    // ===== 辅助函数：膨胀/修补后同步扩展 pixel_to_point =====
+    // 对从无效变为有效的像素，从原始有效邻域中找到z最大的像素，复制其三维点
+    auto expandPixelToPoint = [&](const cv::Mat& valid_before, int kernel_size) {
+      int half_k = kernel_size / 2;
+      for (int r = 0; r < img_rows_; ++r) {
+        for (int c = 0; c < img_cols_; ++c) {
+          // 只处理：之前无效(-1) → 现在有效(+1)
+          if (valid_before.at<float>(r, c) > 0.0f || valid_mask.at<float>(r, c) <= 0.0f) {
+            continue;
+          }
+          // 在邻域内搜索原始有效像素中 z 最大的
+          float best_z = -std::numeric_limits<float>::max();
+          int best_idx = -1;
+          for (int dr = -half_k; dr <= half_k; ++dr) {
+            for (int dc = -half_k; dc <= half_k; ++dc) {
+              int nr = r + dr, nc = c + dc;
+              if (nr < 0 || nr >= img_rows_ || nc < 0 || nc >= img_cols_) continue;
+              if (valid_before.at<float>(nr, nc) <= 0.0f) continue;
+              int idx = nr * img_cols_ + nc;
+              auto it = pixel_to_point.find(idx);
+              if (it == pixel_to_point.end()) continue;
+              if (it->second.z > best_z) {
+                best_z = it->second.z;
+                best_idx = idx;
+              }
+            }
+          }
+          if (best_idx >= 0) {
+            pixel_to_point[r * img_cols_ + c] = pixel_to_point[best_idx];
+          }
+        }
+      }
+    };
+    // ===== 辅助函数 END =====
+
     // 确保保存目录存在
     // std::filesystem::create_directories(save_dir_);
     // cv::imwrite(save_dir_ + "height_raw.png", height_img_raw);
 
     // 形态学膨胀填充间隙
     if (dilate_ks_ > 0) {
+      cv::Mat valid_before_dilate = valid_mask.clone();  // 膨胀前快照
+
       cv::Mat kernel = cv::getStructuringElement(
         cv::MORPH_ELLIPSE, cv::Size(dilate_ks_, dilate_ks_));
       cv::dilate(height_img, height_img, kernel);
@@ -291,6 +328,9 @@ private:
       // 膨胀填充的像素标记为有效 (+1)
       cv::dilate(valid_mask, valid_mask, kernel);
       valid_mask.setTo(1.0f, valid_mask > -0.5f);  // 膨胀后 > -0.5 的设为 +1
+
+      // 同步扩展 pixel_to_point（膨胀新增的像素）
+      expandPixelToPoint(valid_before_dilate, dilate_ks_);
     }
 
     // 保存膨胀图（仅第一次膨胀后，修补前）
@@ -300,13 +340,18 @@ private:
     // 图像修补：用更大膨胀填充所有剩余空洞
     // fill_holes_ = false;  // 默认不填充所有空洞，避免过度膨胀
     if (fill_holes_) {
+      cv::Mat valid_before_fill = valid_mask.clone();  // 修补前快照
+
       cv::Mat kernel2 = cv::getStructuringElement(
-        cv::MORPH_ELLIPSE, cv::Size(5, 5));
+        cv::MORPH_ELLIPSE, cv::Size(7, 7));
       cv::dilate(height_img, height_img, kernel2);
 
       // 膨胀填充的像素标记为有效 (+1)
       cv::dilate(valid_mask, valid_mask, kernel2);
       valid_mask.setTo(1.0f, valid_mask > -0.5f);
+
+      // 同步扩展 pixel_to_point（修补新增的像素）
+      expandPixelToPoint(valid_before_fill, 5);
     }
 
     // 保存修补图（所有膨胀/修补处理后的最终高度图）
@@ -370,7 +415,7 @@ private:
         for (int c = 0; c < img_cols_; ++c) {
           if (clean_edges.at<uint8_t>(r, c) == 0) continue;
 
-          auto it = pixel_to_point.find((r+3) * img_cols_ + c);
+          auto it = pixel_to_point.find(r * img_cols_ + c);
           if (it != pixel_to_point.end()) {
             // z < -2 的点是坡下的点，不作为坡上的边缘，过滤掉
             // if (it->second.z >= -2.0f || it->second.z <= -1.0f) {
