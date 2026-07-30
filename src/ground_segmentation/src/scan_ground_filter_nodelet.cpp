@@ -110,7 +110,7 @@ ScanGroundFilterComponent::ScanGroundFilterComponent(const rclcpp::NodeOptions &
   // Setup pub/sub
   pub_no_ground_ = this->create_publisher<sensor_msgs::msg::PointCloud2>("output/no_ground", 10);
   sub_cloud_ = this->create_subscription<sensor_msgs::msg::PointCloud2>(
-    "input/pointcloud", rclcpp::SensorDataQoS(),
+    "/rslidar_points", rclcpp::SensorDataQoS(),
     std::bind(&ScanGroundFilterComponent::onPointCloud, this, _1));
 }
 
@@ -126,6 +126,9 @@ void ScanGroundFilterComponent::convertPointcloudGridScan(
     normalizeRadian(std::atan2(grid_mode_switch_radius_ + grid_size_m_, virtual_lidar_z_)) -
     normalizeRadian(std::atan2(grid_mode_switch_radius_, virtual_lidar_z_));
   for (size_t i = 0; i < in_cloud->points.size(); ++i) {
+    if (!pcl::isFinite(in_cloud->points[i])) {
+      continue;
+    }
     auto x{
       in_cloud->points[i].x - vehicle_info_.wheel_base_m / 2.0f -
       center_pcl_shift_};  // base on front wheel center
@@ -179,6 +182,9 @@ void ScanGroundFilterComponent::convertPointcloud(
   PointRef current_point;
 
   for (size_t i = 0; i < in_cloud->points.size(); ++i) {
+    if (!pcl::isFinite(in_cloud->points[i])) {
+      continue;
+    }
     auto radius{static_cast<float>(std::hypot(in_cloud->points[i].x, in_cloud->points[i].y))};
     auto theta{normalizeRadian(std::atan2(in_cloud->points[i].x, in_cloud->points[i].y), 0.0)};
     auto radial_div{

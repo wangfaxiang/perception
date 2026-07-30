@@ -12,8 +12,10 @@ python3 src/centerpoint/scripts/boxs_to_marker.py
 ```bash
 cd <workspace>
 
-colcon build --packages-select lidar_image_projection
+colcon build --packages-select lidar_image_projection 
 colcon build --cmake-args -DCMAKE_BUILD_TYPE=Debug --packages-select lidar_image_projection
+
+colcon build --cmake-args -DCMAKE_BUILD_TYPE=Debug --packages-select ground_segmentation
 ```
 
 ## 运行
