@@ -22,8 +22,10 @@ lidar_image_projection:
     vert_fov_deg: 90.0
 
     # 图像分辨率: 1200×144
-    horiz_resolution_deg: 0.1    # 120°/0.1 = 1200 列
-    vert_resolution_deg: 0.625   # 90°/0.625 = 144 行
+    # horiz_resolution_deg: 0.1    # 120°/0.1 = 1200 列
+    # vert_resolution_deg: 0.625   # 90°/0.625 = 144 行
+    horiz_resolution_deg: 0.25    # 120°/0.1 = 1200 列
+    vert_resolution_deg: 0.25   # 90°/0.625 = 144 行
 
     # 距离范围 (米)
     max_range: 100.0

@@ -511,11 +511,18 @@ private:
           // if (it->second.z >= -2.0f || it->second.z <= -1.0f) {
 
           // 计算当前点的垂直角和水平角，过滤视场边缘点（不可能是边坡边缘）
-          float edge_range = std::sqrt(it->second.x * it->second.x + it->second.y * it->second.y + it->second.z * it->second.z);
-          float edge_vert_angle = std::asin(it->second.z / edge_range);
-          float edge_horiz_angle = std::atan2(it->second.y, it->second.x);
-          float horiz_max_rad = -horiz_min_rad_;  // 最大水平角 (+60°)
-          bool min_vert = false, min_horiz = false, max_horiz = false;
+          // float edge_range = std::sqrt(it->second.x * it->second.x + it->second.y * it->second.y + it->second.z * it->second.z);
+          // if(edge_range < 1.0f) {
+          //   float edge_vert_angle = std::asin(it->second.z / edge_range);
+          //   float edge_horiz_angle = std::atan2(it->second.y, it->second.x);
+          //   RCLCPP_INFO(this->get_logger(),
+          //     "DEBUG pixel[%d,%d] point(%.2f,%.2f,%.2f): range=%.4f, vert_angle=%.4f rad (%.2f deg), horiz_angle=%.4f rad (%.2f deg)",
+          //     r, c,
+          //     it->second.x, it->second.y, it->second.z,
+          //     edge_range,
+          //     edge_vert_angle, edge_vert_angle * 180.0 / M_PI,
+          //     edge_horiz_angle, edge_horiz_angle * 180.0 / M_PI);
+          // }
           edge_cloud.push_back(it->second);
           // }
         }
