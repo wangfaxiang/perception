@@ -490,7 +490,8 @@ private:
       edge_img = height_bgr;
 
       // ===== 5. 提取边缘点云：通过 pixel_to_point 获取边缘像素的代表点 =====
-      pcl::PointCloud<pcl::PointXYZI> edge_cloud;
+      // 先用临时 vector 收集边缘点及其水平角，按水平角从大到小排序后存入 intensity
+      std::vector<std::pair<float, pcl::PointXYZI>> edge_with_angle;
 
       for (int r = 0; r < img_rows_; ++r)
       {
@@ -507,25 +508,26 @@ private:
           if (isBottomFirst(it->second))
             continue;
 
-          // z < -2 的点是坡下的点，不作为坡上的边缘，过滤掉
-          // if (it->second.z >= -2.0f || it->second.z <= -1.0f) {
-
-          // 计算当前点的垂直角和水平角，过滤视场边缘点（不可能是边坡边缘）
-          // float edge_range = std::sqrt(it->second.x * it->second.x + it->second.y * it->second.y + it->second.z * it->second.z);
-          // if(edge_range < 1.0f) {
-          //   float edge_vert_angle = std::asin(it->second.z / edge_range);
-          //   float edge_horiz_angle = std::atan2(it->second.y, it->second.x);
-          //   RCLCPP_INFO(this->get_logger(),
-          //     "DEBUG pixel[%d,%d] point(%.2f,%.2f,%.2f): range=%.4f, vert_angle=%.4f rad (%.2f deg), horiz_angle=%.4f rad (%.2f deg)",
-          //     r, c,
-          //     it->second.x, it->second.y, it->second.z,
-          //     edge_range,
-          //     edge_vert_angle, edge_vert_angle * 180.0 / M_PI,
-          //     edge_horiz_angle, edge_horiz_angle * 180.0 / M_PI);
-          // }
-          edge_cloud.push_back(it->second);
-          // }
+          float horiz_angle = std::atan2(it->second.y, it->second.x);
+          edge_with_angle.push_back({horiz_angle, it->second});
         }
+      }
+
+      // 按水平角从大到小排序（降序）
+      std::sort(edge_with_angle.begin(), edge_with_angle.end(),
+                [](const std::pair<float, pcl::PointXYZI> &a,
+                   const std::pair<float, pcl::PointXYZI> &b) {
+                  return a.first > b.first;
+                });
+
+      // 排序后存入 edge_cloud，intensity 存归一化排序序号（0~255）
+      pcl::PointCloud<pcl::PointXYZI> edge_cloud;
+      float max_idx = static_cast<float>(edge_with_angle.size() - 1);
+      for (size_t i = 0; i < edge_with_angle.size(); ++i)
+      {
+        pcl::PointXYZI pt = edge_with_angle[i].second;
+        pt.intensity = (max_idx > 0.0f) ? (static_cast<float>(i) / max_idx * 255.0f) : 0.0f;
+        edge_cloud.push_back(pt);
       }
 
       // 查找边缘点云中最远点和最近点

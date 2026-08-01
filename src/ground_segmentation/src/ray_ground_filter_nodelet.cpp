@@ -128,13 +128,20 @@ void RayGroundFilterComponent::ConvertXYZIToRTZColor(
       static_cast<float>(atan2(in_cloud->points[i].y, in_cloud->points[i].x)) * 180 / M_PI;
     // LiDAR horizontal FOV: 120° (-60° to 60°), normalize to [0, 120)
     theta += 60.0f;
-    if (theta < 0) {
-      theta += 120;
+    // Clamp to [0, 120) instead of wrapping — wrapping causes +60° edge points
+    // to be assigned to radial_div=0, mixing with -60° edge points and breaking
+    // the ground/non-ground classification at both FOV boundaries.
+    if (theta < 0.0f) {
+      theta = 0.0f;
     }
-    if (theta >= 120) {
-      theta -= 120;
+    if (theta >= 120.0f) {
+      theta = 120.0f - 1e-6f;
     }
     auto radial_div = static_cast<size_t>(floor(theta / radial_divider_angle_));
+    // Safety clamp: ensure radial_div stays within array bounds
+    if (radial_div >= radial_dividers_num_) {
+      radial_div = radial_dividers_num_ - 1;
+    }
 
     new_point.point.x = in_cloud->points[i].x;
     new_point.point.y = in_cloud->points[i].y;

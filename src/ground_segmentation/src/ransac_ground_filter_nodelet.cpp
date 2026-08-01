@@ -131,11 +131,15 @@ RANSACGroundFilterComponent::RANSACGroundFilterComponent(const rclcpp::NodeOptio
 
   // Setup publisher and subscriber (subscription kept alive by node)
   pub_no_ground_ = this->create_publisher<PointCloud2>("~/output/no_ground", rclcpp::QoS(10));
-  [[maybe_unused]] auto sub = this->create_subscription<PointCloud2>(
-    "~/input", rclcpp::QoS(10),
-    std::bind(&RANSACGroundFilterComponent::onPointCloud, this, std::placeholders::_1));
+  // [[maybe_unused]] auto sub = this->create_subscription<PointCloud2>(
+  //   "~/input", rclcpp::QoS(10),
+  //   std::bind(&RANSACGroundFilterComponent::onPointCloud, this, std::placeholders::_1));
 
   using std::placeholders::_1;
+  sub_cloud_ = this->create_subscription<sensor_msgs::msg::PointCloud2>(
+    "/rslidar_points", rclcpp::SensorDataQoS(),
+    std::bind(&RANSACGroundFilterComponent::onPointCloud, this, _1));
+
   set_param_res_ = this->add_on_set_parameters_callback(
     std::bind(&RANSACGroundFilterComponent::paramCallback, this, _1));
 
@@ -254,18 +258,19 @@ void RANSACGroundFilterComponent::applyRANSAC(
   seg.segment(*output_inliers, *output_coefficients);
 }
 
-void RANSACGroundFilterComponent::onPointCloud(const PointCloud2ConstPtr & input)
+void RANSACGroundFilterComponent::onPointCloud(const sensor_msgs::msg::PointCloud2 & input)
 {
   std::scoped_lock lock(mutex_);
   PointCloud2::SharedPtr output(new PointCloud2);
-  filter(input, *output);
+  auto input_ptr = std::make_shared<const sensor_msgs::msg::PointCloud2>(input);
+  filter(input_ptr, *output);
   pub_no_ground_->publish(*output);
 }
 
 void RANSACGroundFilterComponent::filter(
   const PointCloud2::ConstSharedPtr & input, PointCloud2 & output)
 {
-  std::scoped_lock lock(mutex_);
+  // std::scoped_lock lock(mutex_);
   sensor_msgs::msg::PointCloud2::SharedPtr input_transformed_ptr(new sensor_msgs::msg::PointCloud2);
   if (!transformPointCloud(base_frame_, input, input_transformed_ptr)) {
     RCLCPP_ERROR_STREAM_THROTTLE(
