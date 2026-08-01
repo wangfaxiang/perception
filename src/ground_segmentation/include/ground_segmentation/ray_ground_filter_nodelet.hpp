@@ -125,6 +125,7 @@ private:
     min_height_threshold_;              // useful for close points
   double
     reclass_distance_threshold_;  // distance between points at which re classification will occur
+  double sensor_height_;           // mounting height of LiDAR above ground in meters
 
   size_t radial_dividers_num_;
 

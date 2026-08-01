@@ -31,6 +31,7 @@
 
 #include "ground_segmentation/ray_ground_filter_nodelet.hpp"
 
+#include <cmath>
 #include <string>
 #include <vector>
 
@@ -78,6 +79,7 @@ RayGroundFilterComponent::RayGroundFilterComponent(const rclcpp::NodeOptions & o
     min_height_threshold_ = declare_parameter("min_height_threshold", 0.15);
     concentric_divider_distance_ = declare_parameter("concentric_divider_distance", 0.0);
     reclass_distance_threshold_ = declare_parameter("reclass_distance_threshold", 0.1);
+    sensor_height_ = declare_parameter("sensor_height", 1.2);
   }
 
   // Setup TF
@@ -111,17 +113,26 @@ void RayGroundFilterComponent::ConvertXYZIToRTZColor(
   out_radial_ordered_clouds.resize(radial_dividers_num_);
 
   for (size_t i = 0; i < in_cloud->points.size(); i++) {
+    // filter out NaN points
+    if (!std::isfinite(in_cloud->points[i].x) ||
+        !std::isfinite(in_cloud->points[i].y) ||
+        !std::isfinite(in_cloud->points[i].z)) {
+      continue;
+    }
+
     PointXYZRTColor new_point;
     auto radius = static_cast<float>(sqrt(
       in_cloud->points[i].x * in_cloud->points[i].x +
       in_cloud->points[i].y * in_cloud->points[i].y));
     auto theta =
       static_cast<float>(atan2(in_cloud->points[i].y, in_cloud->points[i].x)) * 180 / M_PI;
+    // LiDAR horizontal FOV: 120° (-60° to 60°), normalize to [0, 120)
+    theta += 60.0f;
     if (theta < 0) {
-      theta += 360;
+      theta += 120;
     }
-    if (theta >= 360) {
-      theta -= 360;
+    if (theta >= 120) {
+      theta -= 120;
     }
     auto radial_div = static_cast<size_t>(floor(theta / radial_divider_angle_));
 
@@ -184,12 +195,13 @@ void RayGroundFilterComponent::ClassifyPointCloud(
 {
   out_ground_indices.indices.clear();
   out_no_ground_indices.indices.clear();
+  const float ground_z = static_cast<float>(-sensor_height_);
 #pragma omp for
   for (size_t i = 0; i < in_radial_ordered_clouds.size();
        i++)  // sweep through each radial division
   {
     float prev_radius = 0.f;
-    float prev_height = 0.f;
+    float prev_height = ground_z;
     bool prev_ground = false;
     bool current_ground = false;
     for (size_t j = 0; j < in_radial_ordered_clouds[i].size();
@@ -237,8 +249,8 @@ void RayGroundFilterComponent::ClassifyPointCloud(
           // if previous points wasn't ground
           if (!prev_ground) {
             if (
-              current_height <= general_height_threshold &&
-              current_height >= -general_height_threshold) {
+              current_height <= (ground_z + general_height_threshold) &&
+              current_height >= (ground_z - general_height_threshold)) {
               current_ground = true;
             } else {
               current_ground = false;
@@ -250,8 +262,8 @@ void RayGroundFilterComponent::ClassifyPointCloud(
           // check if previous point is too far from previous one, if so classify again
           if (
             points_distance > reclass_distance_threshold_ &&
-            (current_height <= general_height_threshold &&
-             current_height >= -general_height_threshold)) {
+            (current_height <= (ground_z + general_height_threshold) &&
+             current_height >= (ground_z - general_height_threshold))) {
             current_ground = true;
           } else {
             current_ground = false;
@@ -321,7 +333,7 @@ void RayGroundFilterComponent::filter(
   std::vector<pcl::PointIndices> radial_division_indices;
   std::vector<PointCloudXYZRTColor> radial_ordered_clouds;
 
-  radial_dividers_num_ = ceil(360 / radial_divider_angle_);
+  radial_dividers_num_ = ceil(120 / radial_divider_angle_);
 
   ConvertXYZIToRTZColor(
     current_sensor_cloud_ptr, organized_points, radial_division_indices, radial_ordered_clouds);
@@ -390,6 +402,9 @@ rcl_interfaces::msg::SetParametersResult RayGroundFilterComponent::paramCallback
   }
   if (get_param(p, "use_vehicle_footprint", use_vehicle_footprint_)) {
     RCLCPP_DEBUG(get_logger(), "Setting use_vehicle_footprint to: %d.", use_vehicle_footprint_);
+  }
+  if (get_param(p, "sensor_height", sensor_height_)) {
+    RCLCPP_DEBUG(get_logger(), "Setting sensor_height to: %f.", sensor_height_);
   }
 
   rcl_interfaces::msg::SetParametersResult result;
