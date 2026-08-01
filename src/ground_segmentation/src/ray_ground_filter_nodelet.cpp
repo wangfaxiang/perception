@@ -86,11 +86,16 @@ RayGroundFilterComponent::RayGroundFilterComponent(const rclcpp::NodeOptions & o
 
   // Setup publisher and subscriber (subscription kept alive by node)
   pub_no_ground_ = this->create_publisher<PointCloud2>("~/output/no_ground", rclcpp::QoS(10));
-  [[maybe_unused]] auto sub = this->create_subscription<PointCloud2>(
-    "/rslidar_points", rclcpp::QoS(10),
-    std::bind(&RayGroundFilterComponent::onPointCloud, this, std::placeholders::_1));
+  // [[maybe_unused]] auto sub = this->create_subscription<PointCloud2>(
+  //   "/rslidar_points", rclcpp::QoS(10),
+  //   std::bind(&RayGroundFilterComponent::onPointCloud, this, std::placeholders::_1));
 
   using std::placeholders::_1;
+  sub_cloud_ = this->create_subscription<sensor_msgs::msg::PointCloud2>(
+    "/rslidar_points", rclcpp::SensorDataQoS(),
+    std::bind(&RayGroundFilterComponent::onPointCloud, this, _1));
+
+  // using std::placeholders::_1;
   set_param_res_ = this->add_on_set_parameters_callback(
     std::bind(&RayGroundFilterComponent::paramCallback, this, _1));
 }
@@ -297,7 +302,7 @@ void RayGroundFilterComponent::ExtractPointsIndices(
   extract_ground.filter(*out_removed_indices_cloud_ptr);
 }
 
-void RayGroundFilterComponent::onPointCloud(const PointCloud2ConstPtr & input)
+void RayGroundFilterComponent::onPointCloud(const sensor_msgs::msg::PointCloud2 & input)
 {
   std::scoped_lock lock(mutex_);
   PointCloud2::SharedPtr output(new PointCloud2);
@@ -306,12 +311,11 @@ void RayGroundFilterComponent::onPointCloud(const PointCloud2ConstPtr & input)
 }
 
 void RayGroundFilterComponent::filter(
-  const PointCloud2::ConstSharedPtr & input, PointCloud2 & output)
+  const sensor_msgs::msg::PointCloud2 & input, PointCloud2 & output)
 {
-  std::scoped_lock lock(mutex_);
 
   pcl::PointCloud<PointType_>::Ptr current_sensor_cloud_ptr(new pcl::PointCloud<PointType_>);
-  pcl::fromROSMsg(*input, *current_sensor_cloud_ptr);
+  pcl::fromROSMsg(input, *current_sensor_cloud_ptr);
 
   PointCloudXYZRTColor organized_points;
   std::vector<pcl::PointIndices> radial_division_indices;
@@ -336,7 +340,7 @@ void RayGroundFilterComponent::filter(
   sensor_msgs::msg::PointCloud2::SharedPtr no_ground_cloud_msg_ptr(
     new sensor_msgs::msg::PointCloud2);
   pcl::toROSMsg(*no_ground_cloud_ptr, *no_ground_cloud_msg_ptr);
-  no_ground_cloud_msg_ptr->header = input->header;
+  no_ground_cloud_msg_ptr->header = input.header;
 
   output = *no_ground_cloud_msg_ptr;
 }

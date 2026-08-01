@@ -107,15 +107,15 @@ class RayGroundFilterComponent : public rclcpp::Node
 
 private:
   rclcpp::Publisher<PointCloud2>::SharedPtr pub_no_ground_;
-
+  rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr sub_cloud_;
   std::unique_ptr<tf2_ros::Buffer> tf_buffer_;
   std::unique_ptr<tf2_ros::TransformListener> tf_listener_;
   std::mutex mutex_;
 
   void filter(
-    const PointCloud2ConstPtr & input, PointCloud2 & output);
+    const sensor_msgs::msg::PointCloud2 & input, PointCloud2 & output);
 
-  void onPointCloud(const PointCloud2ConstPtr & input);
+  void onPointCloud(const sensor_msgs::msg::PointCloud2 & input);
   double general_max_slope_;            // degrees
   double local_max_slope_;              // degrees
   double initial_max_slope_;            // degrees
