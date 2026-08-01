@@ -32,6 +32,8 @@ include_directories(
 
 ament_auto_add_library(ground_segmentation SHARED
   src/scan_ground_filter_nodelet.cpp
+  src/ransac_ground_filter_nodelet.cpp
+  src/ray_ground_filter_nodelet.cpp
 )
 
 target_link_libraries(ground_segmentation
@@ -52,6 +54,16 @@ endif()
 rclcpp_components_register_node(ground_segmentation
   PLUGIN "ground_segmentation::ScanGroundFilterComponent"
   EXECUTABLE scan_ground_filter_node)
+
+# -- RANSAC Ground Filter --
+rclcpp_components_register_node(ground_segmentation
+  PLUGIN "ground_segmentation::RANSACGroundFilterComponent"
+  EXECUTABLE ransac_ground_filter_node)
+
+# -- Ray Ground Filter --
+rclcpp_components_register_node(ground_segmentation
+  PLUGIN "ground_segmentation::RayGroundFilterComponent"
+  EXECUTABLE ray_ground_filter_node)
 
 
 ament_auto_package(INSTALL_TO_SHARE
