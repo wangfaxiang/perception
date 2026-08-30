@@ -1,0 +1,13 @@
+float32 x 
+float32 y 
+float32 z 
+float32 w 
+float32 l 
+float32 h 
+float32 vx 
+float32 vy 
+float32 rt 
+int32 id 
+float32 score 
+string track_id
+string label
