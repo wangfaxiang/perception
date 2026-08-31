@@ -110,7 +110,7 @@ ScanGroundFilterComponent::ScanGroundFilterComponent(const rclcpp::NodeOptions &
   // Setup pub/sub
   pub_no_ground_ = this->create_publisher<sensor_msgs::msg::PointCloud2>("output/no_ground", 10);
   sub_cloud_ = this->create_subscription<sensor_msgs::msg::PointCloud2>(
-    "/rslidar_points", rclcpp::SensorDataQoS(),
+    "/front/rslidar_points", rclcpp::SensorDataQoS(),
     std::bind(&ScanGroundFilterComponent::onPointCloud, this, _1));
 }
 

@@ -6,6 +6,14 @@ common:
   send_packet_ros: false                # true: Send packets through ROS or ROS2(Used to record packet)
   send_point_cloud_ros: true            # true: Send point cloud through ROS or ROS2
 lidar:
+  # =========================================================================
+  # 设备网络配置:
+  #   Orin         : 192.168.1.227
+  #   后雷达(rear) : 192.168.1.224   msop 6699  difop 7788
+  #   前雷达(front): 192.168.1.223   msop 6698  difop 7787
+  #   两个雷达端口不同, host_address 保持默认 0.0.0.0(监听所有网卡)即可
+  # =========================================================================
+  # ============ 后激光雷达 (rear) ============
   - driver:
       lidar_type: RSE1             #  LiDAR type - RS16, RS32, RSBP, RSAIRY, RSFAIRY, RSHELIOS, RSHELIOS_16P, RS128, RS80, RS48, RSP128, RSP80, RSP48, 
                                    #               RSM1, RSM1_JUMBO, RSM2, RSM3, RSE1, RSMX, RSEMX.
@@ -36,9 +44,36 @@ lidar:
       pcap_path: /home/promote/E1/2026-05-29-16-35-22-RS-1-Data.pcap  #The path of pcap file
 
     ros:
-      ros_frame_id: rslidar                           #Frame id of packet message and point cloud message
-      ros_recv_packet_topic: /rslidar_packets          #Topic used to receive lidar packets from ROS
-      ros_send_packet_topic: /rslidar_packets          #Topic used to send lidar packets through ROS
-      ros_send_imu_data_topic: /rslidar_imu_data         #Topic used to send imu data through ROS
-      ros_send_point_cloud_topic: /rslidar_points      #Topic used to send point cloud through ROS
+      ros_frame_id: rear_rslidar                           #Frame id of packet message and point cloud message
+      ros_recv_packet_topic: /rslidar_packets_rear          #Topic used to receive lidar packets from ROS
+      ros_send_packet_topic: /rslidar_packets_rear          #Topic used to send lidar packets through ROS
+      ros_send_imu_data_topic: /rslidar_imu_data_rear         #Topic used to send imu data through ROS
+      ros_send_point_cloud_topic: /rear/rslidar_points      #Topic used to send point cloud through ROS
+      ros_queue_length: 100
+
+  # ============ 前激光雷达 (front) ============
+  - driver:
+      lidar_type: RSE1
+      msop_port: 6698
+      difop_port: 7787
+      imu_port: 0
+      user_layer_bytes: 0
+      tail_layer_bytes: 0
+      min_distance: 0.2
+      max_distance: 200
+      use_lidar_clock: true
+      dense_points: false
+      ts_first_point: true
+      start_angle: 0
+      end_angle: 360
+      pcap_repeat: true
+      pcap_rate: 1.0
+      pcap_path: /home/promote/E1/2026-05-29-16-35-22-RS-1-Data.pcap
+
+    ros:
+      ros_frame_id: front_rslidar
+      ros_recv_packet_topic: /rslidar_packets_front
+      ros_send_packet_topic: /rslidar_packets_front
+      ros_send_imu_data_topic: /rslidar_imu_data_front
+      ros_send_point_cloud_topic: /front/rslidar_points
       ros_queue_length: 100                            #Topic QoS history depth

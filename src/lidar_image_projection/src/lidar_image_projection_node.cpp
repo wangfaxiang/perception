@@ -2,6 +2,9 @@
  * @file lidar_image_projection_node.cpp
  * @brief 将速腾聚创E1固态雷达点云投影为高度图像（1200×144），并提取高度边缘（防矿卡坠坡）
  *
+ * 支持多雷达: 通过 lidar_name 参数（front/rear）区分前/后雷达，
+ *             同一节点启动两个实例，分别订阅并独立发布边坡监测结果。
+ *
  * E1雷达规格:
  *   - 水平视场角: 120° (-60° ~ +60°), 分辨率 0.1° → 1200 列
  *   - 垂直视场角: 90°  (-45° ~ +45°), 线数 144 → 144 行
@@ -39,11 +42,26 @@ public:
   LidarImageProjection()
       : Node("lidar_image_projection")
   {
-    // 声明参数
-    this->declare_parameter("input_topic", "/rslidar_points");
-    this->declare_parameter("height_image_topic", "/lidar_height_image");
-    this->declare_parameter("dilated_height_image_topic", "/lidar_dilated_height_image");
-    this->declare_parameter("frame_id", "rslidar");
+    // 雷达标识（front / rear）：用于推导默认话题名与 frame_id
+    // 同一个可执行文件可启动多个节点实例，分别处理前/后雷达并独立做边坡监测
+    this->declare_parameter<std::string>("lidar_name", "");
+    std::string lidar_name;
+    this->get_parameter("lidar_name", lidar_name);
+
+    // 话题前缀: front → /front/xxx; rear → /rear/xxx; 空 → /xxx（保持单雷达兼容）
+    const std::string topic_prefix = lidar_name.empty() ? "" : ("/" + lidar_name);
+    const std::string default_input_topic      = topic_prefix + "/rslidar_points";
+    const std::string default_height_topic     = topic_prefix + "/lidar_height_image";
+    const std::string default_dilated_topic    = topic_prefix + "/lidar_dilated_height_image";
+    const std::string default_edge_topic       = topic_prefix + "/lidar_edge_image";
+    const std::string default_edge_cloud_topic = topic_prefix + "/lidar_edge_cloud";
+    const std::string default_frame_id         = lidar_name.empty() ? "rslidar" : (lidar_name + "_rslidar");
+
+    // 声明参数（话题名默认由 lidar_name 推导，也可在参数文件中显式覆盖）
+    this->declare_parameter<std::string>("input_topic", default_input_topic);
+    this->declare_parameter<std::string>("height_image_topic", default_height_topic);
+    this->declare_parameter<std::string>("dilated_height_image_topic", default_dilated_topic);
+    this->declare_parameter<std::string>("frame_id", default_frame_id);
 
     // E1 雷达视场角参数（1200×144）
     this->declare_parameter("horiz_fov_deg", 120.0);      // 水平视场角（度）
@@ -67,8 +85,8 @@ public:
     this->declare_parameter("voxel_leaf_size", 0.03); // 体素栅格边长（米），0=禁用
 
     // 边缘检测参数（防矿卡坠坡）
-    this->declare_parameter("edge_image_topic", "/lidar_edge_image"); // 边缘图像话题
-    this->declare_parameter("edge_cloud_topic", "/lidar_edge_cloud"); // 边缘点云话题
+    this->declare_parameter<std::string>("edge_image_topic", default_edge_topic);       // 边缘图像话题
+    this->declare_parameter<std::string>("edge_cloud_topic", default_edge_cloud_topic); // 边缘点云话题
     this->declare_parameter("enable_edge_detection", true);           // 是否启用边缘检测
     this->declare_parameter("canny_low_thresh", 120);                 // Canny 低阈值
     this->declare_parameter("canny_high_thresh", 300);                // Canny 高阈值
@@ -141,7 +159,10 @@ public:
       RCLCPP_INFO(this->get_logger(), "Edge detection DISABLED.");
     }
 
-    RCLCPP_INFO(this->get_logger(), "LidarImageProjection node started.");
+    RCLCPP_INFO(this->get_logger(),
+                "LidarImageProjection node started (lidar: %s, input: %s).",
+                lidar_name.empty() ? "single" : lidar_name.c_str(),
+                input_topic.c_str());
   }
 
 private:

@@ -3,41 +3,99 @@
 # 雷达规格:
 #   水平视场角: 120° (-60° ~ +60°), 分辨率 0.1° → 1200 列
 #   垂直视场角: 90°  (-45° ~ +45°), 线数 144 → 144 行
-lidar_image_projection:
+#
+# 前/后两颗 E1R 雷达各启动一个节点实例，分别做边坡监测。
+# lidar_name 用于推导默认话题名与 frame_id:
+#   front → /front/rslidar_points, /front/lidar_*, frame_id=front_rslidar
+#   rear  → /rear/rslidar_points,  /rear/lidar_*,  frame_id=rear_rslidar
+# 下面仍显式列出话题名，便于按需修改。
+
+# ============ 前雷达 (E1R, front) ============
+lidar_image_projection_front:
   ros__parameters:
+    # 雷达标识
+    lidar_name: "front"
+
     # 输入点云话题
-    input_topic: "/rslidar_points"
+    input_topic: "/front/rslidar_points"
 
     # 输出图像话题
-    height_image_topic: "/lidar_height_image"
-    dilated_height_image_topic: "/lidar_dilated_height_image"
-    edge_image_topic: "/lidar_edge_image"
-    edge_cloud_topic: "/lidar_edge_cloud"
+    height_image_topic: "/front/lidar_height_image"
+    dilated_height_image_topic: "/front/lidar_dilated_height_image"
+    edge_image_topic: "/front/lidar_edge_image"
+    edge_cloud_topic: "/front/lidar_edge_cloud"
 
     # 坐标系
-    frame_id: "rslidar"
+    frame_id: "front_rslidar"
+    # frame_id: "rslidar"    
 
     # 视场角参数 (度)
     horiz_fov_deg: 120.0
     vert_fov_deg: 90.0
 
-    # 图像分辨率: 1200×144
-    # horiz_resolution_deg: 0.1    # 120°/0.1 = 1200 列
-    # vert_resolution_deg: 0.625   # 90°/0.625 = 144 行
-    horiz_resolution_deg: 0.25    # 120°/0.1 = 1200 列
-    vert_resolution_deg: 0.25   # 90°/0.625 = 144 行
+    # 图像分辨率
+    horiz_resolution_deg: 0.25
+    vert_resolution_deg: 0.25
 
     # 距离范围 (米)
     max_range: 100.0
     min_range: 0.2
 
-    # 高度映射 (Z轴): z=0→灰度255, z=-10m→灰度120
+    # 高度映射 (Z轴): z=0→灰度255, z=height_bottom→灰度120
     height_top: 0.0
     height_bottom: -10.0
     height_top_gray: 255
     height_bottom_gray: 120
 
     # 形态学膨胀核大小 (0=不填充, 3=填充1像素间隙)
+    dilate_kernel_size: 3
+
+    # 图像修补填充所有空洞
+    fill_holes: true
+
+    # 边缘检测（防矿卡坠坡）
+    enable_edge_detection: true
+    canny_low_thresh: 100
+    canny_high_thresh: 300
+    edge_min_height_diff: 0.3
+
+# ============ 后雷达 (E1R, rear) ============
+lidar_image_projection_rear:
+  ros__parameters:
+    # 雷达标识
+    lidar_name: "rear"
+
+    # 输入点云话题
+    input_topic: "/rear/rslidar_points"
+
+    # 输出图像话题
+    height_image_topic: "/rear/lidar_height_image"
+    dilated_height_image_topic: "/rear/lidar_dilated_height_image"
+    edge_image_topic: "/rear/lidar_edge_image"
+    edge_cloud_topic: "/rear/lidar_edge_cloud"
+
+    # 坐标系
+    frame_id: "rear_rslidar"
+
+    # 视场角参数 (度)
+    horiz_fov_deg: 120.0
+    vert_fov_deg: 90.0
+
+    # 图像分辨率
+    horiz_resolution_deg: 0.25
+    vert_resolution_deg: 0.25
+
+    # 距离范围 (米)
+    max_range: 100.0
+    min_range: 0.2
+
+    # 高度映射 (Z轴)
+    height_top: 0.0
+    height_bottom: -10.0
+    height_top_gray: 255
+    height_bottom_gray: 120
+
+    # 形态学膨胀核大小
     dilate_kernel_size: 3
 
     # 图像修补填充所有空洞
