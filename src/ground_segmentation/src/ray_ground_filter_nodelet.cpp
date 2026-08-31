@@ -80,6 +80,7 @@ RayGroundFilterComponent::RayGroundFilterComponent(const rclcpp::NodeOptions & o
     concentric_divider_distance_ = declare_parameter("concentric_divider_distance", 0.0);
     reclass_distance_threshold_ = declare_parameter("reclass_distance_threshold", 0.1);
     sensor_height_ = declare_parameter("sensor_height", 1.2);
+    voxel_leaf_size_ = declare_parameter("voxel_leaf_size", 0.1);
   }
 
   // Setup TF
@@ -94,7 +95,7 @@ RayGroundFilterComponent::RayGroundFilterComponent(const rclcpp::NodeOptions & o
 
   using std::placeholders::_1;
   sub_cloud_ = this->create_subscription<sensor_msgs::msg::PointCloud2>(
-    "/rslidar_points", rclcpp::SensorDataQoS(),
+    "/front/rslidar_points", rclcpp::SensorDataQoS(),
     std::bind(&RayGroundFilterComponent::onPointCloud, this, _1));
 
   // using std::placeholders::_1;
@@ -260,6 +261,13 @@ void RayGroundFilterComponent::ClassifyPointCloud(
               current_height >= (ground_z - general_height_threshold)) {
               current_ground = true;
             } else {
+              // if (in_radial_ordered_clouds[i][j].point.z <= -1.0 && in_radial_ordered_clouds[i][j].point.z >= -1.4)
+              // {
+              //   RCLCPP_ERROR(
+              //     this->get_logger(),
+              //     "failed to find intersection of initial point line and vehicle footprint");
+              // }
+              
               current_ground = false;
             }
           } else {
@@ -268,11 +276,17 @@ void RayGroundFilterComponent::ClassifyPointCloud(
         } else {
           // check if previous point is too far from previous one, if so classify again
           if (
-            points_distance > reclass_distance_threshold_ &&
+            // points_distance > reclass_distance_threshold_ &&
             (current_height <= (ground_z + general_height_threshold) &&
              current_height >= (ground_z - general_height_threshold))) {
             current_ground = true;
           } else {
+            // if (in_radial_ordered_clouds[i][j].point.z <= -1.0 && in_radial_ordered_clouds[i][j].point.z >= -1.4)
+            // {
+            //   RCLCPP_ERROR(
+            //     this->get_logger(),
+            //     "failed to find intersection of initial point line and vehicle footprint");
+            // }            
             current_ground = false;
           }
         }
@@ -353,8 +367,26 @@ void RayGroundFilterComponent::filter(
   pcl::PointCloud<PointType_>::Ptr no_ground_cloud_ptr(new pcl::PointCloud<PointType_>);
   pcl::PointCloud<pcl::PointXYZRGB>::Ptr radials_cloud_ptr(new pcl::PointCloud<pcl::PointXYZRGB>);
 
+  // Extract no_ground directly from no_ground_indices instead of taking the
+  // complement of ground_indices. NaN points are skipped in
+  // ConvertXYZIToRTZColor and therefore never appear in either index list; if we
+  // used the negative of ground_indices those NaN points would leak into the
+  // output and trip pcl::isFinite checks downstream (e.g. in the cluster node).
   ExtractPointsIndices(
-    current_sensor_cloud_ptr, ground_indices, ground_cloud_ptr, no_ground_cloud_ptr);
+    current_sensor_cloud_ptr, no_ground_indices, no_ground_cloud_ptr, ground_cloud_ptr);
+
+  // 体素降采样：把原先聚类节点里的抽稀步骤前移到这里，聚类节点无需再降采样。
+  // 0 表示关闭降采样。
+  if (voxel_leaf_size_ > 0.0f) {
+    pcl::PointCloud<PointType_>::Ptr downsampled(new pcl::PointCloud<PointType_>);
+    pcl::VoxelGrid<PointType_> vg;
+    vg.setInputCloud(no_ground_cloud_ptr);
+    vg.setLeafSize(
+      static_cast<float>(voxel_leaf_size_), static_cast<float>(voxel_leaf_size_),
+      static_cast<float>(voxel_leaf_size_));
+    vg.filter(*downsampled);
+    no_ground_cloud_ptr = downsampled;
+  }
 
   sensor_msgs::msg::PointCloud2::SharedPtr no_ground_cloud_msg_ptr(
     new sensor_msgs::msg::PointCloud2);
@@ -412,6 +444,9 @@ rcl_interfaces::msg::SetParametersResult RayGroundFilterComponent::paramCallback
   }
   if (get_param(p, "sensor_height", sensor_height_)) {
     RCLCPP_DEBUG(get_logger(), "Setting sensor_height to: %f.", sensor_height_);
+  }
+  if (get_param(p, "voxel_leaf_size", voxel_leaf_size_)) {
+    RCLCPP_DEBUG(get_logger(), "Setting voxel_leaf_size to: %f.", voxel_leaf_size_);
   }
 
   rcl_interfaces::msg::SetParametersResult result;

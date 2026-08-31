@@ -10,6 +10,7 @@ find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
+find_package(visualization_msgs REQUIRED)
 find_package(PCL REQUIRED REQUIRED)
 find_package(pcl_conversions REQUIRED)
 find_package(box_msg REQUIRED)
@@ -28,7 +29,7 @@ add_executable(${PROJECT_NAME} src/node.cpp)
 target_link_libraries(${PROJECT_NAME}
     ${PCL_LIBRARIES}
 )
-ament_target_dependencies(${PROJECT_NAME} rclcpp sensor_msgs std_msgs box_msg) 
+ament_target_dependencies(${PROJECT_NAME} rclcpp sensor_msgs std_msgs visualization_msgs box_msg) 
 
 install(TARGETS
   ${PROJECT_NAME}

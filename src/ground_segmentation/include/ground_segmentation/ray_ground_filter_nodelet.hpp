@@ -126,6 +126,7 @@ private:
   double
     reclass_distance_threshold_;  // distance between points at which re classification will occur
   double sensor_height_;           // mounting height of LiDAR above ground in meters
+  double voxel_leaf_size_;         // voxel grid leaf size for downsampling the no_ground output
 
   size_t radial_dividers_num_;
 
