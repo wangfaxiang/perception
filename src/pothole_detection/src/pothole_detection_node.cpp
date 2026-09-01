@@ -72,7 +72,7 @@ public:
     this->declare_parameter("max_vert_angle_deg", -1.0);  // 参与检测的最大垂直角（最远处，须 < 0）
     this->declare_parameter("max_range", 30.0);           // 参与检测的最大水平距离（米）
     this->declare_parameter("min_range", 0.5);            // 参与检测的最小水平距离（米）
-    this->declare_parameter("ditch_ratio_thresh", 10.0);   // 间距比阈值
+    this->declare_parameter("ditch_ratio_thresh", 7.0);   // 间距比阈值
     this->declare_parameter("ditch_min_width", 0.5);      // 最小沟宽（米）
     this->declare_parameter("min_gap_m", 0.02);           // 最小理论线束间距（米）
     this->declare_parameter("cluster_dist", 1.5);         // 沟沿点聚类距离（米）

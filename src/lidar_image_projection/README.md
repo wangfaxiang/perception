@@ -11,13 +11,15 @@ ros2 run centerpoint centerpoint
 
 ## 显示检测框
 python3 src/centerpoint/scripts/boxs_to_marker.py
+/usr/bin/python3 src/centerpoint/scripts/boxs_to_marker.py
 
 ## 编译
 
 ```bash
 cd <workspace>
 
-colcon build --packages-select lidar_image_projection 
+colcon build --cmake-args -DCMAKE_BUILD_TYPE=Debug --packages-select centerpoint
+s
 colcon build --cmake-args -DCMAKE_BUILD_TYPE=Debug --packages-select lidar_image_projection
 
 colcon build --cmake-args -DCMAKE_BUILD_TYPE=Debug --packages-select pothole_detection
@@ -41,6 +43,10 @@ colcon build --cmake-args -DCMAKE_BUILD_TYPE=Debug --packages-select cluster
 source install/setup.bash
 source /opt/ros/galactic/setup.bash
 ros2 launch lidar_image_projection lidar_image_projection.launch.py
+
+source install/setup.bash
+source /opt/ros/galactic/setup.bash
+ros2 launch pothole_detection pothole_detection.launch.py
 
 # 或分别直接运行节点
 ros2 run lidar_image_projection lidar_image_projection_node \

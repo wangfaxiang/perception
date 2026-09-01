@@ -53,10 +53,10 @@ CenterpointRos::CenterpointRos() : rclcpp::Node("centerpointros")
     centerpoint->prepare();
     d_points = nullptr;    
     checkCudaErrors(cudaMalloc((void **)&d_points, MAX_POINTS_NUM * params.feature_num * sizeof(float)));    
-    pointsubscribe = this->create_subscription<sensor_msgs::msg::PointCloud2>("/rslidar_points", 1,std::bind(&CenterpointRos::onPointCloud, this, _1));
+    pointsubscribe = this->create_subscription<sensor_msgs::msg::PointCloud2>("/front/rslidar_points", 1,std::bind(&CenterpointRos::onPointCloud, this, _1));
     subscribe_ui2Ros = this->create_subscription<std_msgs::msg::String>("/ui2ros", 10,std::bind(&CenterpointRos::onUi2Ros, this, _1));
     publisher_pose = this->create_publisher<box_msg::msg::Boxs>("/centerpoint_boxs_no_velocity", 1);
-    conf_thres=0.4;
+    conf_thres=0.2;
     detect="false";
 }
 void CenterpointRos::onUi2Ros(const std_msgs::msg::String::ConstSharedPtr input_msg){
@@ -118,7 +118,7 @@ void CenterpointRos::onPointCloud(const sensor_msgs::msg::PointCloud2::ConstShar
         }
     }
     boxarray.header.stamp=this->get_clock() -> now();
-    boxarray.header.frame_id = "rslidar";
+    boxarray.header.frame_id = "front_rslidar";
     publisher_pose->publish(boxarray);
 
     // RCLCPP_INFO(this->get_logger(), "done");
