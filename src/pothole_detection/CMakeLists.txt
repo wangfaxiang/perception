@@ -14,6 +14,7 @@ endif()
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(sensor_msgs REQUIRED)
+find_package(visualization_msgs REQUIRED)
 find_package(pcl_conversions REQUIRED)
 find_package(PCL REQUIRED COMPONENTS common filters)
 
@@ -28,6 +29,7 @@ add_executable(pothole_detection_node
 ament_target_dependencies(pothole_detection_node
   rclcpp
   sensor_msgs
+  visualization_msgs
   pcl_conversions
 )
 

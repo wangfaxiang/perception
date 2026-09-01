@@ -22,6 +22,9 @@
 
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/point_cloud2.hpp>
+#include <visualization_msgs/msg/marker.hpp>
+#include <visualization_msgs/msg/marker_array.hpp>
+#include <geometry_msgs/msg/point.hpp>
 #include <pcl_conversions/pcl_conversions.h>
 #include <pcl/point_cloud.h>
 #include <pcl/point_types.h>
@@ -58,6 +61,7 @@ public:
     const std::string prefix = lidar_name.empty() ? "" : ("/" + lidar_name);
     this->declare_parameter<std::string>("input_topic", prefix + "/rslidar_points");
     this->declare_parameter<std::string>("ditch_cloud_topic", prefix + "/ditch_cloud");
+    this->declare_parameter<std::string>("ditch_line_topic", prefix + "/ditch_line");
     this->declare_parameter<std::string>("frame_id",
                                          lidar_name.empty() ? "rslidar" : (lidar_name + "_rslidar"));
 
@@ -76,6 +80,7 @@ public:
 
     this->get_parameter("input_topic", input_topic_);
     this->get_parameter("ditch_cloud_topic", ditch_topic_);
+    this->get_parameter("ditch_line_topic", line_topic_);
     this->get_parameter("frame_id", frame_id_);
     this->get_parameter("mount_height", mount_height_);
     this->get_parameter("horiz_fov_deg", horiz_fov_deg_);
@@ -100,6 +105,7 @@ public:
         input_topic_, rclcpp::SensorDataQoS(),
         std::bind(&PotholeDetection::onCloud, this, std::placeholders::_1));
     pub_ditch_ = this->create_publisher<sensor_msgs::msg::PointCloud2>(ditch_topic_, 10);
+    pub_line_ = this->create_publisher<visualization_msgs::msg::MarkerArray>(line_topic_, 10);
 
     RCLCPP_INFO(this->get_logger(),
                 "Ditch detection started (lidar=%s, height=%.2fm, ratio>%.1f, width>%.2fm)",
@@ -199,19 +205,60 @@ private:
       else clusters.push_back({cand});
     }
 
-    // 发布点数达标（横向足够连续）的沟段
+    // 发布沟点云 + 一条按水平角连线的 Marker 线（所有沟点合成一条折线）
     pcl::PointCloud<pcl::PointXYZI> ditch_cloud;
+    std::vector<Candidate> line_points;
     for (const auto &cluster : clusters)
     {
       if (static_cast<int>(cluster.size()) < min_pts_) continue;
-      for (const auto &cand : cluster)
+      line_points.insert(line_points.end(), cluster.begin(), cluster.end());
+    }
+
+    // 所有沟点按水平角升序（-60°→+60°）排列，连成一条折线
+    std::sort(line_points.begin(), line_points.end(),
+              [](const Candidate &a, const Candidate &b) {
+                return std::atan2(a.point.y, a.point.x) < std::atan2(b.point.y, b.point.x);
+              });
+
+    visualization_msgs::msg::MarkerArray lines;
+    if (line_points.empty())
+    {
+      // 无沟时清除所有旧线，避免刷新残留
+      visualization_msgs::msg::Marker clear;
+      clear.action = visualization_msgs::msg::Marker::DELETEALL;
+      lines.markers.push_back(clear);
+    }
+    else
+    {
+      visualization_msgs::msg::Marker line;
+      line.header.stamp = msg->header.stamp;
+      line.header.frame_id = frame_id_;
+      line.ns = "ditch";
+      line.id = 0;
+      line.type = visualization_msgs::msg::Marker::LINE_STRIP;
+      line.action = visualization_msgs::msg::Marker::ADD;
+      line.scale.x = 0.1;   // 线宽（米）
+      line.color.r = 1.0f;  // 红色
+      line.color.g = 0.0f;
+      line.color.b = 0.0f;
+      line.color.a = 1.0f;
+      line.lifetime = rclcpp::Duration::from_seconds(0.5);  // 自动过期，避免残留
+
+      for (const auto &cand : line_points)
       {
         pcl::PointXYZI pt = cand.point;
         // intensity 编码归一化间距比: ratio ∈ [1,5] → [0,255]
         const float normalized = std::clamp((cand.ratio - 1.0f) / 4.0f, 0.0f, 1.0f);
         pt.intensity = normalized * 255.0f;
         ditch_cloud.push_back(pt);
+
+        geometry_msgs::msg::Point p;
+        p.x = pt.x;
+        p.y = pt.y;
+        p.z = pt.z;
+        line.points.push_back(p);
       }
+      lines.markers.push_back(line);
     }
 
     if (!ditch_cloud.empty())
@@ -222,12 +269,15 @@ private:
       out.header.frame_id = frame_id_;
       pub_ditch_->publish(out);
     }
+
+    pub_line_->publish(lines);
   }
 
   rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr sub_cloud_;
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pub_ditch_;
+  rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr pub_line_;
 
-  std::string input_topic_, ditch_topic_, frame_id_;
+  std::string input_topic_, ditch_topic_, line_topic_, frame_id_;
   double mount_height_;
   double horiz_fov_deg_, horiz_res_deg_;
   double min_vert_deg_, max_vert_deg_;

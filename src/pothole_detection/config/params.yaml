@@ -14,6 +14,7 @@ pothole_detection_front:
     lidar_name: "front"
     input_topic: "/front/rslidar_points"
     ditch_cloud_topic: "/front/ditch_cloud"
+    ditch_line_topic: "/front/ditch_line"
     frame_id: "front_rslidar"
 
     mount_height: 1.2          # 雷达安装高度（米）
@@ -40,6 +41,7 @@ pothole_detection_rear:
     lidar_name: "rear"
     input_topic: "/rear/rslidar_points"
     ditch_cloud_topic: "/rear/ditch_cloud"
+    ditch_line_topic: "/rear/ditch_line"
     frame_id: "rear_rslidar"
 
     mount_height: 1.2
