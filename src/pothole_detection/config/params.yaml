@@ -1,53 +1,61 @@
-# E1 固态雷达点云投影参数（1200×144）
+# 沟壑（负障碍物）检测参数 —— 速腾聚创 E1R 固态雷达（120°×90°，1200×144）
 #
-# 雷达规格:
-#   水平视场角: 120° (-60° ~ +60°), 分辨率 0.1° → 1200 列
-#   垂直视场角: 90°  (-45° ~ +45°), 线数 144 → 144 行
-pothole_detection:
+# 原理: 相邻线束地面落点水平间距比检测沟壑（沟底被近沿遮挡、雷达扫不到）。
+#   Δx_th = h·(cot β_far − cot β_near)，ratio = Δx_meas / Δx_th > 阈值 → 沟。
+#
+# 前/后两颗 E1R 雷达各启动一个节点实例，通过 lidar_name 区分。
+# lidar_name 用于推导默认话题名与 frame_id:
+#   front → /front/rslidar_points, /front/ditch_cloud, frame_id=front_rslidar
+#   rear  → /rear/rslidar_points,  /rear/ditch_cloud,  frame_id=rear_rslidar
+
+# ============ 前雷达 (E1R, front) ============
+pothole_detection_front:
   ros__parameters:
-    # 输入点云话题
-    input_topic: "/rslidar_points"
+    lidar_name: "front"
+    input_topic: "/front/rslidar_points"
+    ditch_cloud_topic: "/front/ditch_cloud"
+    frame_id: "front_rslidar"
 
-    # 输出图像话题
-    height_image_topic: "/pothole_height_image"
-    dilated_height_image_topic: "/pothole_dilated_height_image"
-    edge_image_topic: "/pothole_edge_image"
-    edge_cloud_topic: "/pothole_edge_cloud"
+    mount_height: 1.2          # 雷达安装高度（米）
 
-    # 坐标系
-    frame_id: "rslidar"
-
-    # 视场角参数 (度)
     horiz_fov_deg: 120.0
-    vert_fov_deg: 90.0
+    horiz_res_deg: 0.1         # 列分辨率，须与雷达原生水平分辨率一致（1200 列）
 
-    # 图像分辨率: 1200×144
-    horiz_resolution_deg: 0.1    # 120°/0.1 = 1200 列
-    vert_resolution_deg: 0.625   # 90°/0.625 = 144 行
+    min_vert_angle_deg: -45.0  # 参与检测的最小垂直角（最近处，向下）
+    max_vert_angle_deg: -1.0   # 参与检测的最大垂直角（最远处，须 < 0）
 
-    # 距离范围 (米)
-    max_range: 100.0
-    min_range: 0.2
+    max_range: 30.0            # 参与检测的最大水平距离（米）
+    min_range: 0.5             # 参与检测的最小水平距离（米）
 
-    # 高度映射 (Z轴): z=0→灰度255, z=-10m→灰度120
-    height_top: 0.0
-    height_bottom: -10.0
-    height_top_gray: 255
-    height_bottom_gray: 120
+    ditch_ratio_thresh: 2.0    # 间距比阈值（越大越严格，误报越少）
+    ditch_min_width: 0.5       # 最小沟宽（米）
+    min_gap_m: 0.02            # 最小理论线束间距（米），小于则跳过该相邻对
 
-    # 形态学膨胀核大小 (0=不填充, 3=填充1像素间隙)
-    dilate_kernel_size: 3
+    cluster_dist: 1.5          # 沟沿点聚类距离（米）
+    min_points_per_ditch: 5    # 每段沟最少点数（≈横向连续列数）
 
-    # 图像修补填充所有空洞
-    fill_holes: true
+# ============ 后雷达 (E1R, rear) ============
+pothole_detection_rear:
+  ros__parameters:
+    lidar_name: "rear"
+    input_topic: "/rear/rslidar_points"
+    ditch_cloud_topic: "/rear/ditch_cloud"
+    frame_id: "rear_rslidar"
 
-    # 坑洞检测（地面凹陷识别）
-    enable_edge_detection: true
-    canny_low_thresh: 100
-    canny_high_thresh: 300
-    edge_min_height_diff: 0.3
+    mount_height: 1.2
 
-    # 坑洞检测参数
-    pothole_min_area: 50       # 最小坑洞面积（像素）
-    pothole_max_area: 5000     # 最大坑洞面积（像素）
-    pothole_min_depth: 0.1     # 最小坑洞深度（米）
+    horiz_fov_deg: 120.0
+    horiz_res_deg: 0.1
+
+    min_vert_angle_deg: -45.0
+    max_vert_angle_deg: -1.0
+
+    max_range: 30.0
+    min_range: 0.5
+
+    ditch_ratio_thresh: 10.0
+    ditch_min_width: 0.5
+    min_gap_m: 0.02
+
+    cluster_dist: 1.5
+    min_points_per_ditch: 5

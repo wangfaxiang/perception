@@ -20,6 +20,8 @@ cd <workspace>
 colcon build --packages-select lidar_image_projection 
 colcon build --cmake-args -DCMAKE_BUILD_TYPE=Debug --packages-select lidar_image_projection
 
+colcon build --cmake-args -DCMAKE_BUILD_TYPE=Debug --packages-select pothole_detection
+
 colcon build --cmake-args -DCMAKE_BUILD_TYPE=Debug --packages-select ground_segmentation
 
 colcon build --cmake-args -DCMAKE_BUILD_TYPE=Debug --packages-select cluster

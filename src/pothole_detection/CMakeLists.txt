@@ -15,15 +15,9 @@ find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(pcl_conversions REQUIRED)
-find_package(cv_bridge REQUIRED)
-find_package(OpenCV REQUIRED)
 find_package(PCL REQUIRED COMPONENTS common filters)
 
-include_directories(
-  ${OpenCV_INCLUDE_DIRS}
-  ${PCL_INCLUDE_DIRS}
-)
-
+include_directories(${PCL_INCLUDE_DIRS})
 link_directories(${PCL_LIBRARY_DIRS})
 
 # Build the node
@@ -35,11 +29,9 @@ ament_target_dependencies(pothole_detection_node
   rclcpp
   sensor_msgs
   pcl_conversions
-  cv_bridge
 )
 
 target_link_libraries(pothole_detection_node
-  ${OpenCV_LIBRARIES}
   ${PCL_LIBRARIES}
 )
 
