@@ -259,6 +259,83 @@ private:
         line.points.push_back(p);
       }
       lines.markers.push_back(line);
+
+      // ===== PCA 估计沟沿主方向（2D: x-y 平面）=====
+      const size_t n = line_points.size();
+      double mx = 0.0, my = 0.0, mz = 0.0;
+      for (const auto &cand : line_points)
+      {
+        mx += cand.point.x;
+        my += cand.point.y;
+        mz += cand.point.z;
+      }
+      mx /= n; my /= n; mz /= n;
+
+      double cxx = 0.0, cyy = 0.0, cxy = 0.0;
+      for (const auto &cand : line_points)
+      {
+        const double dx = cand.point.x - mx;
+        const double dy = cand.point.y - my;
+        cxx += dx * dx;
+        cyy += dy * dy;
+        cxy += dx * dy;
+      }
+
+      // 2x2 协方差矩阵 [[cxx, cxy],[cxy, cyy]] 的最大特征值与对应特征向量（主方向）
+      const double tr = cxx + cyy;
+      const double det = cxx * cyy - cxy * cxy;
+      const double lambda_max = 0.5 * (tr + std::sqrt(tr * tr - 4.0 * det));
+
+      double ux = cxy;
+      double uy = lambda_max - cxx;
+      const double alt_norm = (lambda_max - cyy) * (lambda_max - cyy) + cxy * cxy;
+      if (ux * ux + uy * uy < alt_norm)
+      {
+        ux = lambda_max - cyy;
+        uy = cxy;
+      }
+      const double norm = std::hypot(ux, uy);
+      if (norm > 1e-9) { ux /= norm; uy /= norm; }
+      else { ux = 1.0; uy = 0.0; }
+
+      // 沿主方向的均方差作为线段半长
+      double var = 0.0;
+      for (const auto &cand : line_points)
+      {
+        const double proj = (cand.point.x - mx) * ux + (cand.point.y - my) * uy;
+        var += proj * proj;
+      }
+      const double half_len = 1.5 * std::sqrt(var / n);  // 主方向线适当加长
+
+      // 发布主方向线段（黄色）
+      visualization_msgs::msg::Marker axis;
+      axis.header.stamp = msg->header.stamp;
+      axis.header.frame_id = frame_id_;
+      axis.ns = "ditch_axis";
+      axis.id = 1;
+      axis.type = visualization_msgs::msg::Marker::LINE_STRIP;
+      axis.action = visualization_msgs::msg::Marker::ADD;
+      axis.scale.x = 0.08;  // 线宽（米）
+      axis.color.r = 1.0f;  // 黄色
+      axis.color.g = 1.0f;
+      axis.color.b = 0.0f;
+      axis.color.a = 1.0f;
+      axis.lifetime = rclcpp::Duration::from_seconds(0.5);
+
+      geometry_msgs::msg::Point pa, pb;
+      pa.x = mx - half_len * ux;
+      pa.y = my - half_len * uy;
+      pa.z = mz;
+      pb.x = mx + half_len * ux;
+      pb.y = my + half_len * uy;
+      pb.z = mz;
+      axis.points.push_back(pa);
+      axis.points.push_back(pb);
+      lines.markers.push_back(axis);
+
+      RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 1000,
+                           "Ditch axis: angle=%.1f° (%zu pts)",
+                           std::atan2(uy, ux) * 180.0 / M_PI, n);
     }
 
     if (!ditch_cloud.empty())
