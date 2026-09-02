@@ -19,7 +19,14 @@ python3 src/centerpoint/scripts/boxs_to_marker.py
 cd <workspace>
 
 colcon build --cmake-args -DCMAKE_BUILD_TYPE=Debug --packages-select centerpoint
-s
+
+export PATH=/usr/bin:$PATH
+colcon build --packages-select lidar_centerpoint \
+  --cmake-args -DPYTHON_EXECUTABLE=/usr/bin/python3 \
+  -DTENSORRT_ROOT=/home/promote/wfx/tools/TensorRT/TensorRT-8.6.0.12 \
+  -DCUDA_TOOLKIT_ROOT_DIR=/usr/local/cuda-11.8 \
+  -DCMAKE_BUILD_TYPE=Debug
+
 colcon build --cmake-args -DCMAKE_BUILD_TYPE=Debug --packages-select lidar_image_projection
 
 colcon build --cmake-args -DCMAKE_BUILD_TYPE=Debug --packages-select pothole_detection
