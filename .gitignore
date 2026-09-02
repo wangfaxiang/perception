@@ -2,7 +2,7 @@ build/
 install/
 log/
 *.db3
-.vscode/*
+# .vscode/*
 rosbag2_1/*
 my_rivz.rviz
 src/lidar_image_projection/src/lidar_image_projection_node.cpp

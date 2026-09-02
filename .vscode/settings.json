@@ -1,0 +1,10 @@
+{
+    "ROS2.distro": "galactic",
+    "python.autoComplete.extraPaths": [
+        "/opt/ros/galactic/lib/python3.8/site-packages"
+    ],
+    "python.analysis.extraPaths": [
+        "/opt/ros/galactic/lib/python3.8/site-packages"
+    ],
+    "cmake.sourceDirectory": "/home/promote/wfx/work/lin_gong/mycode/src/rslidar_msg"
+}
