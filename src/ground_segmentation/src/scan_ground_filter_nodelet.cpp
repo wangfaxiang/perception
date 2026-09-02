@@ -578,9 +578,12 @@ void ScanGroundFilterComponent::extractObjectPoints(
   }
 }
 
-void ScanGroundFilterComponent::onPointCloud(
-  const sensor_msgs::msg::PointCloud2::ConstSharedPtr input)
+bool ScanGroundFilterComponent::filter(
+  const sensor_msgs::msg::PointCloud2::ConstSharedPtr input,
+  const std::shared_ptr<tf2_ros::Buffer> tf2,
+  sensor_msgs::msg::PointCloud2 & output)
 {
+  (void)tf2;  // reserved for interface compatibility; input is expected in base_link frame
   std::scoped_lock lock(mutex_);
   pcl::PointCloud<pcl::PointXYZ>::Ptr current_sensor_cloud_ptr(new pcl::PointCloud<pcl::PointXYZ>);
   pcl::fromROSMsg(*input, *current_sensor_cloud_ptr);
@@ -601,11 +604,18 @@ void ScanGroundFilterComponent::onPointCloud(
 
   extractObjectPoints(current_sensor_cloud_ptr, no_ground_indices, no_ground_cloud_ptr);
 
-  auto no_ground_cloud_msg_ptr = std::make_shared<sensor_msgs::msg::PointCloud2>();
-  pcl::toROSMsg(*no_ground_cloud_ptr, *no_ground_cloud_msg_ptr);
+  pcl::toROSMsg(*no_ground_cloud_ptr, output);
+  output.header = input->header;
+  return true;
+}
 
-  no_ground_cloud_msg_ptr->header = input->header;
-  pub_no_ground_->publish(*no_ground_cloud_msg_ptr);
+void ScanGroundFilterComponent::onPointCloud(
+  const sensor_msgs::msg::PointCloud2::ConstSharedPtr input)
+{
+  auto no_ground_cloud_msg_ptr = std::make_shared<sensor_msgs::msg::PointCloud2>();
+  if (filter(input, std::shared_ptr<tf2_ros::Buffer>(), *no_ground_cloud_msg_ptr)) {
+    pub_no_ground_->publish(*no_ground_cloud_msg_ptr);
+  }
 }
 
 rcl_interfaces::msg::SetParametersResult ScanGroundFilterComponent::onParameter(

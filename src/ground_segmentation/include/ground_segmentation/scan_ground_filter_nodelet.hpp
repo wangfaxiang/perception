@@ -257,6 +257,18 @@ public:
   EIGEN_MAKE_ALIGNED_OPERATOR_NEW
   explicit ScanGroundFilterComponent(const rclcpp::NodeOptions & options);
 
+  /*!
+   * Filter ground points from the input pointcloud and output non-ground points.
+   * @param[in] input Input pointcloud, already transformed to base_link frame
+   * @param[in] tf2 TF buffer (reserved for interface compatibility, currently unused)
+   * @param[out] output Non-ground pointcloud
+   * @return true on success
+   */
+  bool filter(
+    const sensor_msgs::msg::PointCloud2::ConstSharedPtr input,
+    const std::shared_ptr<tf2_ros::Buffer> tf2,
+    sensor_msgs::msg::PointCloud2 & output);
+
   // for test
   friend ScanGroundFilterTest;
 };

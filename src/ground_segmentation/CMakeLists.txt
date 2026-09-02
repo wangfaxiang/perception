@@ -92,8 +92,25 @@ endif()
 
 if(BUILD_TESTING)
   find_package(ament_cmake_ros REQUIRED)
+
+  # tf2_geometry_msgs / tf2_sensor_msgs are declared as <test_depend> only,
+  # so they are not discovered by ament_auto_find_build_dependencies().
+  # Find them explicitly for the test targets.
+  find_package(tf2_geometry_msgs REQUIRED)
+  find_package(tf2_sensor_msgs REQUIRED)
+
+  # On Galactic the tf2_*_msgs headers only ship as .h (no .hpp),
+  # so the test sources select the right header via this macro.
+  if("$ENV{ROS_DISTRO}" STREQUAL "galactic")
+    add_compile_options(-DROS_DISTRO_GALACTIC)
+  endif()
+
   ament_add_ros_isolated_gtest(test_scan_ground_filter
     test/test_scan_ground_filter.cpp
+  )
+
+  target_include_directories(test_scan_ground_filter SYSTEM
+    PUBLIC ${tf2_geometry_msgs_INCLUDE_DIRS} ${tf2_sensor_msgs_INCLUDE_DIRS}
   )
 
   target_link_libraries(test_scan_ground_filter
