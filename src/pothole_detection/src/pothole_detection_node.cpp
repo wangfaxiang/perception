@@ -59,7 +59,7 @@ public:
     this->get_parameter("lidar_name", lidar_name);
 
     const std::string prefix = lidar_name.empty() ? "" : ("/" + lidar_name);
-    this->declare_parameter<std::string>("input_topic", prefix + "/rslidar_points");
+    this->declare_parameter<std::string>("input_topic", prefix + "/rslidar_points_leveled");
     this->declare_parameter<std::string>("ditch_cloud_topic", prefix + "/ditch_cloud");
     this->declare_parameter<std::string>("ditch_line_topic", prefix + "/ditch_line");
     this->declare_parameter<std::string>("frame_id",

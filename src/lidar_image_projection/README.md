@@ -1,22 +1,9 @@
-
-<!-- 播放rosbag -->
-ros2 bag play rosbag2_1/ --loop --remap /rslidar_points:=/front/rslidar_points
-ros2 bag play rosbag2_2/ --loop --remap /rslidar_points:=/rear/rslidar_points
-
-## 启动激光雷达
-ros2 launch rslidar_sdk start.py
-
-## 启动centerpoint检测
-ros2 run centerpoint centerpoint
-
-## 显示检测框
-python3 src/centerpoint/scripts/boxs_to_marker.py
-/usr/bin/python3 src/centerpoint/scripts/boxs_to_marker.py
-
 ## 编译
-
 ```bash
 cd <workspace>
+
+source /opt/ros/galactic/setup.bash
+colcon build --cmake-args -DCMAKE_BUILD_TYPE=Debug --packages-select lidar_leveling
 
 colcon build --cmake-args -DCMAKE_BUILD_TYPE=Debug --packages-select centerpoint
 
@@ -36,6 +23,42 @@ colcon build --cmake-args -DCMAKE_BUILD_TYPE=Debug --packages-select ground_segm
 colcon build --cmake-args -DCMAKE_BUILD_TYPE=Debug --packages-select cluster
 ```
 
+## 步骤
+source /opt/ros/galactic/setup.bash
+source install/setup.bash
+
+## 启动激光雷达
+ros2 launch rslidar_sdk start.py
+1.发布原始点云
+/front/rslidar_points
+
+## 将点云调平
+ros2 launch lidar_leveling lidar_leveling.launch.py
+2.调平后点云
+/front/rslidar_points_leveled
+
+## 启动边坡，沟壑检测节点
+ros2 launch pothole_detection pothole_detection.launch.py
+3.边界点云（点云类型）
+/front/ditch_cloud
+4.边界线（红加黄，MarkerArray类型）
+/front/ditch_line
+
+----------------------------------------------------------------------------------------------
+<!-- 播放rosbag -->
+ros2 bag play rosbag2_1/ --loop --remap /rslidar_points:=/front/rslidar_points
+ros2 bag play rosbag2_2/ --loop --remap /rslidar_points:=/rear/rslidar_points
+
+
+## 启动centerpoint检测
+ros2 run centerpoint centerpoint
+
+## 显示检测框
+python3 src/centerpoint/scripts/boxs_to_marker.py
+/usr/bin/python3 src/centerpoint/scripts/boxs_to_marker.py
+
+
+
 ## 运行
 
 前雷达与后雷达各启动一个节点实例，分别订阅并独立做边坡监测：
@@ -50,10 +73,6 @@ colcon build --cmake-args -DCMAKE_BUILD_TYPE=Debug --packages-select cluster
 source install/setup.bash
 source /opt/ros/galactic/setup.bash
 ros2 launch lidar_image_projection lidar_image_projection.launch.py
-
-source install/setup.bash
-source /opt/ros/galactic/setup.bash
-ros2 launch pothole_detection pothole_detection.launch.py
 
 # 或分别直接运行节点
 ros2 run lidar_image_projection lidar_image_projection_node \

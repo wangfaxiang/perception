@@ -12,7 +12,7 @@
 pothole_detection_front:
   ros__parameters:
     lidar_name: "front"
-    input_topic: "/front/rslidar_points"
+    input_topic: "/front/rslidar_points_leveled"
     ditch_cloud_topic: "/front/ditch_cloud"
     ditch_line_topic: "/front/ditch_line"
     frame_id: "front_rslidar"
@@ -28,7 +28,7 @@ pothole_detection_front:
     max_range: 30.0            # 参与检测的最大水平距离（米）
     min_range: 2.5             # 参与检测的最小水平距离（米）
 
-    ditch_ratio_thresh: 7.0    # 间距比阈值（越大越严格，误报越少）
+    ditch_ratio_thresh: 9.0    # 间距比阈值（越大越严格，误报越少）
     ditch_min_width: 0.5       # 最小沟宽（米）
     min_gap_m: 0.02            # 最小理论线束间距（米），小于则跳过该相邻对
 
@@ -39,7 +39,7 @@ pothole_detection_front:
 pothole_detection_rear:
   ros__parameters:
     lidar_name: "rear"
-    input_topic: "/rear/rslidar_points"
+    input_topic: "/rear/rslidar_points_leveled"
     ditch_cloud_topic: "/rear/ditch_cloud"
     ditch_line_topic: "/rear/ditch_line"
     frame_id: "rear_rslidar"
@@ -55,7 +55,7 @@ pothole_detection_rear:
     max_range: 30.0
     min_range: 2.5
 
-    ditch_ratio_thresh: 7.0
+    ditch_ratio_thresh: 15.0
     ditch_min_width: 0.5
     min_gap_m: 0.02
 

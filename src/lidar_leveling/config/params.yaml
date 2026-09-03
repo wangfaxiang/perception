@@ -1,0 +1,38 @@
+# 点云调平参数 —— 速腾聚创 E1R 固态雷达
+#
+# 根据雷达安装欧拉角将点云旋转回水平:
+#   p_level = Rz(yaw) * Ry(pitch) * Rx(roll) * p_lidar
+#   roll 绕 X(前)、pitch 绕 Y(左)、yaw 绕 Z(上)，均遵循右手定则，单位: 度。
+#
+# 调平示例:
+#   若雷达向下俯仰安装 θ（光轴指向地面），设 pitch_deg = +θ 即可把地面调平。
+#   若雷达向左横滚安装 θ，设 roll_deg = -θ 即可调平。
+#
+# 前/后两颗雷达各启动一个节点实例，通过 lidar_name 区分。
+# lidar_name 用于推导默认话题名:
+#   front → /front/rslidar_points → /front/rslidar_points_leveled
+#   rear  → /rear/rslidar_points  → /rear/rslidar_points_leveled
+
+# ============ 前雷达 (front) ============
+lidar_leveling_front:
+  ros__parameters:
+    lidar_name: "front"
+    input_topic: "/front/rslidar_points"
+    output_topic: "/front/rslidar_points_leveled"
+    frame_id: ""              # 输出 frame_id，为空则沿用输入点云的 frame_id
+
+    roll_deg: 0.0             # 安装横滚角（度），绕 X 轴
+    pitch_deg: 30.0            # 安装俯仰角（度），绕 Y 轴
+    yaw_deg: 0.0              # 安装偏航角（度），绕 Z 轴
+
+# ============ 后雷达 (rear) ============
+lidar_leveling_rear:
+  ros__parameters:
+    lidar_name: "rear"
+    input_topic: "/rear/rslidar_points"
+    output_topic: "/rear/rslidar_points_leveled"
+    frame_id: ""
+
+    roll_deg: 0.0
+    pitch_deg: 37.0
+    yaw_deg: 0.0

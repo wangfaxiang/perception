@@ -10,7 +10,7 @@
                 "--ros-args",
                 "-r", "__node:=debug_pothole_det_front",
                 "-p", "lidar_name:=front",
-                "-p", "ditch_ratio_thresh:=7.0",
+                "-p", "ditch_ratio_thresh:=9.0",
                 "-p", "min_range:=3.0"                
             ],
             "cwd": "${workspaceFolder}",
@@ -39,7 +39,9 @@
             "args": [
                 "--ros-args",
                 "-r", "__node:=debug_pothole_det_rear",
-                "-p", "lidar_name:=rear"
+                "-p", "lidar_name:=rear",
+                "-p", "ditch_ratio_thresh:=15.0",
+                "-p", "min_range:=3.0"                    
             ],
             "cwd": "${workspaceFolder}",
             "environment": [
@@ -266,7 +268,7 @@
             "args": [
                 "--ros-args",
                 "-r", "__node:=debug_ransac_ground_filter",
-                "-p", "base_frame:=rslidar",
+                "-p", "base_frame:=front_rslidar",
                 "-p", "debug:=true",
                 "-p", "max_iterations:=1000",
                 "-p", "min_trial:=5000",
@@ -276,7 +278,7 @@
                 "-p", "voxel_size_x:=0.04",
                 "-p", "voxel_size_y:=0.04",
                 "-p", "voxel_size_z:=0.04",
-                "-p", "height_threshold:=0.01"
+                "-p", "height_threshold:=0.13"
             ],
             "cwd": "${workspaceFolder}",
             "environment": [
@@ -304,7 +306,8 @@
             "args": [
                 "--ros-args",
                 "-r", "__node:=debug_cluster",
-                "-r", "/point/ground_segmentation/ransac:=/debug_ray_ground_filter/output/no_ground"
+                // "-r", "/point/ground_segmentation/ransac:=/debug_ray_ground_filter/output/no_ground",
+                "-r", "/point/ground_segmentation/ransac:=/debug_ransac_ground_filter/output/no_ground"
             ],
             "cwd": "${workspaceFolder}",
             "environment": [
@@ -324,13 +327,75 @@
             "stopAtEntry": false,
             "preLaunchTask": ""
         },
+        {
+            "name": "Debug lidar_leveling_front (launch)",
+            "type": "cppdbg",
+            "request": "launch",
+            "program": "${workspaceFolder}/build/lidar_leveling/lidar_leveling_node",
+            "args": [
+                "--ros-args",
+                "-r", "__node:=debug_lidar_leveling_front",
+                "-p", "lidar_name:=front",
+                "-p", "roll_deg:=0.0",
+                "-p", "pitch_deg:=30.0",
+                "-p", "yaw_deg:=0.0"
+            ],
+            "cwd": "${workspaceFolder}",
+            "environment": [
+                {
+                    "name": "LD_LIBRARY_PATH",
+                    "value": "${workspaceFolder}/install/lidar_leveling/lib:${env:LD_LIBRARY_PATH}"
+                }
+            ],
+            "MIMode": "gdb",
+            "setupCommands": [
+                {
+                    "description": "Enable pretty-printing for gdb",
+                    "text": "-enable-pretty-printing",
+                    "ignoreFailures": true
+                }
+            ],
+            "stopAtEntry": false,
+            "preLaunchTask": ""
+        },
+        {
+            "name": "Debug lidar_leveling_rear (launch)",
+            "type": "cppdbg",
+            "request": "launch",
+            "program": "${workspaceFolder}/build/lidar_leveling/lidar_leveling_node",
+            "args": [
+                "--ros-args",
+                "-r", "__node:=debug_lidar_leveling_rear",
+                "-p", "lidar_name:=rear",
+                "-p", "roll_deg:=0.0",
+                "-p", "pitch_deg:=37.0",
+                "-p", "yaw_deg:=0.0"
+            ],
+            "cwd": "${workspaceFolder}",
+            "environment": [
+                {
+                    "name": "LD_LIBRARY_PATH",
+                    "value": "${workspaceFolder}/install/lidar_leveling/lib:${env:LD_LIBRARY_PATH}"
+                }
+            ],
+            "MIMode": "gdb",
+            "setupCommands": [
+                {
+                    "description": "Enable pretty-printing for gdb",
+                    "text": "-enable-pretty-printing",
+                    "ignoreFailures": true
+                }
+            ],
+            "stopAtEntry": false,
+            "preLaunchTask": ""
+        },
     ],
     "compounds": [
         {
             "name": "Debug pothole 前后雷达 (front + rear)",
             "configurations": [
                 "Debug pothole_detection_front (launch)",
-                // "Debug pothole_detection_rear (launch)"
+                "Debug pothole_detection_rear (launch)"
             ],
             "stopAll": true
         },
@@ -339,6 +404,14 @@
             "configurations": [
                 "Debug lidar_image_projection_front (launch)",
                 // "Debug lidar_image_projection_rear (launch)"
+            ],
+            "stopAll": true
+        },
+        {
+            "name": "Debug lidar_leveling 前后雷达 (front + rear)",
+            "configurations": [
+                "Debug lidar_leveling_front (launch)",
+                "Debug lidar_leveling_rear (launch)"
             ],
             "stopAll": true
         }

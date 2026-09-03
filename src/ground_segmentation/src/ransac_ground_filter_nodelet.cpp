@@ -137,7 +137,7 @@ RANSACGroundFilterComponent::RANSACGroundFilterComponent(const rclcpp::NodeOptio
 
   using std::placeholders::_1;
   sub_cloud_ = this->create_subscription<sensor_msgs::msg::PointCloud2>(
-    "/rslidar_points", rclcpp::SensorDataQoS(),
+    "/front/rslidar_points", rclcpp::SensorDataQoS(),
     std::bind(&RANSACGroundFilterComponent::onPointCloud, this, _1));
 
   set_param_res_ = this->add_on_set_parameters_callback(
