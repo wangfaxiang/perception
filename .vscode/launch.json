@@ -317,14 +317,50 @@
             "preLaunchTask": ""
         },
         {
-            "name": "Debug cluster (launch)",
+            "name": "Debug cluster_front (launch)",
             "type": "cppdbg",
             "request": "launch",
             "program": "${workspaceFolder}/build/cluster/cluster",
             "args": [
-                "--ros-args","-r", "__node:=debug_cluster",
-                // 接前雷达 no_ground（接后雷达改为 /rear/no_ground）
-                "-r", "/point/ground_segmentation/ransac:=/front/no_ground"
+                "--ros-args",
+                "-r", "__node:=debug_cluster_front",
+                "-p", "lidar_name:=front",
+                "-p", "cluster_tolerance:=0.20",
+                "-p", "min_cluster_size:=15",
+                "-p", "max_cluster_size:=1000",
+                "-p", "region_rowing:=false"
+            ],
+            "cwd": "${workspaceFolder}",
+            "environment": [
+                {
+                    "name": "LD_LIBRARY_PATH",
+                    "value": "${workspaceFolder}/install/cluster/lib:${workspaceFolder}/install/box_msg/lib:${env:LD_LIBRARY_PATH}"
+                }
+            ],
+            "MIMode": "gdb",
+            "setupCommands": [
+                {
+                    "description": "Enable pretty-printing for gdb",
+                    "text": "-enable-pretty-printing",
+                    "ignoreFailures": true
+                }
+            ],
+            "stopAtEntry": false,
+            "preLaunchTask": ""
+        },
+        {
+            "name": "Debug cluster_rear (launch)",
+            "type": "cppdbg",
+            "request": "launch",
+            "program": "${workspaceFolder}/build/cluster/cluster",
+            "args": [
+                "--ros-args",
+                "-r", "__node:=debug_cluster_rear",
+                "-p", "lidar_name:=rear",
+                "-p", "cluster_tolerance:=1.0",
+                "-p", "min_cluster_size:=15",
+                "-p", "max_cluster_size:=1000",
+                "-p", "region_rowing:=true"
             ],
             "cwd": "${workspaceFolder}",
             "environment": [
@@ -437,6 +473,14 @@
             "configurations": [
                 "Debug ransac_ground_filter_front (launch)",
                 "Debug ransac_ground_filter_rear (launch)"
+            ],
+            "stopAll": true
+        },
+        {
+            "name": "Debug cluster 前后雷达 (front + rear)",
+            "configurations": [
+                "Debug cluster_front (launch)",
+                // "Debug cluster_rear (launch)"
             ],
             "stopAll": true
         }

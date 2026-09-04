@@ -23,6 +23,7 @@ lidar_leveling_front:
 
     roll_deg: 0.0             # 安装横滚角（度），绕 X 轴
     pitch_deg: 30.0            # 安装俯仰角（度），绕 Y 轴
+    # pitch_deg: 0.0            # 安装俯仰角（度），绕 Y 轴    
     yaw_deg: 0.0              # 安装偏航角（度），绕 Z 轴
 
 # ============ 后雷达 (rear) ============

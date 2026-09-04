@@ -68,7 +68,7 @@ ransac_ground_filter_rear:
     voxel_size_x: 0.04
     voxel_size_y: 0.04
     voxel_size_z: 0.04
-    height_threshold: 0.13
+    height_threshold: 0.20
 
 # ============ Ray 地面滤波节点 (ray_ground_filter_node) ============
 ray_ground_filter:

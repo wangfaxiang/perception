@@ -31,11 +31,13 @@ source install/setup.bash
 ros2 launch rslidar_sdk start.py
 1.发布原始点云
 /front/rslidar_points
+/rear/rslidar_points
 
 ## 将点云调平
 ros2 launch lidar_leveling lidar_leveling.launch.py
 2.调平后点云
 /front/rslidar_points_leveled
+/rear/rslidar_points_leveled
 
 -------------------------------------------------------------------------------------------
 
@@ -43,8 +45,10 @@ ros2 launch lidar_leveling lidar_leveling.launch.py
 ros2 launch pothole_detection pothole_detection.launch.py
 3.边界点云（点云类型）
 /front/ditch_cloud
+/rear/ditch_cloud
 4.边界线（红加黄，MarkerArray类型）
 /front/ditch_line
+/rear/ditch_line
 
 ----------------------------------------------------------------------------------------------
 
@@ -53,6 +57,16 @@ ros2 launch ground_segmentation ransac_ground_filter.launch.py
 输出话题：
 /front/no_ground
 /rear/no_ground
+
+## 启动点云聚类
+ros2 launch cluster cluster.launch.py
+输出话题：
+/front/box/cluster/euclidean/marker（MarkerArray类型）
+/rear/box/cluster/euclidean/marker（MarkerArray类型）
+
+
+
+
 
 
 ----------------------------------------------------------------------------------------------

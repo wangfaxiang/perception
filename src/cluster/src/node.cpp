@@ -7,11 +7,53 @@ using json = nlohmann::json;
 Cluster::Cluster() : rclcpp::Node("Cluster")
 {
     using std::placeholders::_1;
-    cluster_tolerance=1;
-    min_cluster_size=20;
-    max_cluster_size=1000;
+
+    // 雷达标识（front / rear），用于推导默认话题名，区分前后雷达实例
+    std::string lidar_name;
+    this->declare_parameter<std::string>("lidar_name", "");
+    this->get_parameter("lidar_name", lidar_name);
+
+    const std::string prefix = lidar_name.empty() ? "" : ("/" + lidar_name);
+
+    // 输入：接 ransac 地面过滤输出的非地面点云（no_ground）
+    this->declare_parameter<std::string>(
+        "input_topic",
+        lidar_name.empty() ? "/point/ground_segmentation/ransac" : (prefix + "/no_ground"));
+    // 输出话题：按前后雷达区分
+    this->declare_parameter<std::string>(
+        "euclidean_topic",
+        lidar_name.empty() ? "/box/cluster/euclidean" : (prefix + "/box/cluster/euclidean"));
+    this->declare_parameter<std::string>(
+        "region_rowing_topic",
+        lidar_name.empty() ? "/box/cluster/region_rowing" : (prefix + "/box/cluster/region_rowing"));
+    this->declare_parameter<std::string>(
+        "euclidean_marker_topic",
+        lidar_name.empty() ? "/box/cluster/euclidean/marker" : (prefix + "/box/cluster/euclidean/marker"));
+    this->declare_parameter<std::string>(
+        "region_rowing_marker_topic",
+        lidar_name.empty() ? "/box/cluster/region_rowing/marker" : (prefix + "/box/cluster/region_rowing/marker"));
+
+    std::string input_topic, euclidean_topic, region_rowing_topic;
+    std::string euclidean_marker_topic, region_rowing_marker_topic;
+    this->get_parameter("input_topic", input_topic);
+    this->get_parameter("euclidean_topic", euclidean_topic);
+    this->get_parameter("region_rowing_topic", region_rowing_topic);
+    this->get_parameter("euclidean_marker_topic", euclidean_marker_topic);
+    this->get_parameter("region_rowing_marker_topic", region_rowing_marker_topic);
+
+    this->declare_parameter<float>("cluster_tolerance", 1.0f);
+    this->get_parameter("cluster_tolerance", cluster_tolerance);
+
+    this->declare_parameter<int>("min_cluster_size", 15);
+    this->get_parameter("min_cluster_size", min_cluster_size);
+
+    this->declare_parameter<int>("max_cluster_size", 1000);
+    this->get_parameter("max_cluster_size", max_cluster_size);
+
+    this->declare_parameter<bool>("region_rowing", false);
+    this->get_parameter("region_rowing", region_rowing);
+
     euclidean_cluster="true";
-    region_rowing="false";
     leaf_size=0.05;
     downsample="false";
     region_rowing_min_cluster_size=5;
@@ -20,18 +62,24 @@ Cluster::Cluster() : rclcpp::Node("Cluster")
     curvature_threshold=1.0;
     number_of_neighbours=30;
     radius_search=0.03;
-    pointsubscribe = this->create_subscription<sensor_msgs::msg::PointCloud2>("/point/ground_segmentation/ransac", 1,std::bind(&Cluster::onPointCloud, this, _1));
-    publisher_cluster_euclidean = this->create_publisher<box_msg::msg::Boxs>("/box/cluster/euclidean", 1);
-    publisher_cluster_region_rowing = this->create_publisher<box_msg::msg::Boxs>("/box/cluster/region_rowing", 1);
-    publisher_cluster_euclidean_marker = this->create_publisher<visualization_msgs::msg::MarkerArray>("/box/cluster/euclidean/marker", 1);
-    publisher_cluster_region_rowing_marker = this->create_publisher<visualization_msgs::msg::MarkerArray>("/box/cluster/region_rowing/marker", 1);
+    pointsubscribe = this->create_subscription<sensor_msgs::msg::PointCloud2>(input_topic, 1,std::bind(&Cluster::onPointCloud, this, _1));
+    publisher_cluster_euclidean = this->create_publisher<box_msg::msg::Boxs>(euclidean_topic, 1);
+    publisher_cluster_region_rowing = this->create_publisher<box_msg::msg::Boxs>(region_rowing_topic, 1);
+    publisher_cluster_euclidean_marker = this->create_publisher<visualization_msgs::msg::MarkerArray>(euclidean_marker_topic, 1);
+    publisher_cluster_region_rowing_marker = this->create_publisher<visualization_msgs::msg::MarkerArray>(region_rowing_marker_topic, 1);
     subjson = this->create_subscription<std_msgs::msg::String>("/ui2ros", 1,std::bind(&Cluster::onSubjson, this, _1));
+
+    RCLCPP_INFO(this->get_logger(),
+                "cluster started (lidar_name=%s): input=%s, euclidean=%s, region_rowing=%s",
+                lidar_name.c_str(), input_topic.c_str(), euclidean_topic.c_str(),
+                region_rowing_topic.c_str());
 }
 void Cluster::onSubjson(const std_msgs::msg::String::ConstSharedPtr input_msg){
     try{
         json dic = json::parse(input_msg->data);
         if (dic["euclidean_cluster"]!="")              euclidean_cluster=dic["euclidean_cluster"];
-        if (dic["region_rowing"]!="")                  region_rowing=dic["region_rowing"];
+        if (dic["region_rowing"].is_boolean())         region_rowing=dic["region_rowing"].get<bool>();
+        else if (dic["region_rowing"].is_string())     region_rowing=(dic["region_rowing"]=="true");
         if (dic["cluster_tolerance"]!=-1)              cluster_tolerance=dic["cluster_tolerance"];
         if (dic["min_cluster_size"]!=-1)               min_cluster_size=dic["min_cluster_size"];
         if (dic["max_cluster_size"]!=-1)               max_cluster_size=dic["max_cluster_size"];
@@ -115,7 +163,7 @@ visualization_msgs::msg::MarkerArray Cluster::boxsToMarkerArray(const box_msg::m
 
 box_msg::msg::Boxs Cluster::clustersToBoxs(
     const std::vector<pcl::PointIndices>& cluster_indices,
-    const pcl::PointCloud<pcl::PointXYZI>::ConstPtr& cloud)
+    const pcl::PointCloud<pcl::PointXYZ>::ConstPtr& cloud)
 {
     box_msg::msg::Boxs boxarray;
     for (const pcl::PointIndices& indices : cluster_indices)
@@ -125,7 +173,7 @@ box_msg::msg::Boxs Cluster::clustersToBoxs(
         float max_x = 0.0f, max_y = 0.0f, max_z = 0.0f;
         for (const int index : indices.indices)
         {
-            const pcl::PointXYZI& p = (*cloud)[index];
+            const pcl::PointXYZ& p = (*cloud)[index];
             if (first)
             {
                 min_x = max_x = p.x;
@@ -157,26 +205,40 @@ box_msg::msg::Boxs Cluster::clustersToBoxs(
     return boxarray;
 }
 
+void Cluster::printBoxInfo(const box_msg::msg::Boxs& boxarray)
+{
+    for (size_t i = 0; i < boxarray.box.size(); ++i)
+    {
+        const auto& b = boxarray.box[i];
+        const float bottom_z = b.z - b.h / 2.0f;            // 包围盒底部离地高度（地面 z≈0）
+        const float horizontal_dist = std::hypot(b.x, b.y); // 到雷达中心的水平距离
+        RCLCPP_INFO(this->get_logger(),
+                    "[box %zu] center=(%.2f, %.2f, %.2f) size=(%.2f, %.2f, %.2f) "
+                    "bottom_z=%.2f m, horizontal_dist=%.2f m",
+                    i, b.x, b.y, b.z, b.w, b.l, b.h, bottom_z, horizontal_dist);
+    }
+}
+
 void Cluster::onPointCloud(const sensor_msgs::msg::PointCloud2::ConstSharedPtr input_msg)
 {
     if(!input_msg){
         RCLCPP_WARN(this->get_logger(), "topic has not pointcloud !!!");
         return;
     }
-    pcl::PointCloud<pcl::PointXYZI>::Ptr cloud(new pcl::PointCloud<pcl::PointXYZI>);
+    pcl::PointCloud<pcl::PointXYZ>::Ptr cloud(new pcl::PointCloud<pcl::PointXYZ>);
     pcl::fromROSMsg(*input_msg, *cloud);
 
     // 去除无效点（NaN/Inf）
-    pcl::PointCloud<pcl::PointXYZI>::Ptr cloud_clean(new pcl::PointCloud<pcl::PointXYZI>);
+    pcl::PointCloud<pcl::PointXYZ>::Ptr cloud_clean(new pcl::PointCloud<pcl::PointXYZ>);
     cloud_clean->reserve(cloud->size());
     for (const auto& p : cloud->points)
         if (pcl::isFinite(p)) cloud_clean->push_back(p);
 
     // 体素降采样：E1R 高密度点云先抽稀，大幅降低聚类耗时
-    pcl::PointCloud<pcl::PointXYZI>::Ptr cloud_filtered(new pcl::PointCloud<pcl::PointXYZI>);
+    pcl::PointCloud<pcl::PointXYZ>::Ptr cloud_filtered(new pcl::PointCloud<pcl::PointXYZ>);
     if (downsample=="true" && leaf_size > 0.0f)
     {
-        pcl::VoxelGrid<pcl::PointXYZI> vg;
+        pcl::VoxelGrid<pcl::PointXYZ> vg;
         vg.setInputCloud(cloud_clean);
         vg.setLeafSize(leaf_size, leaf_size, leaf_size);
         vg.filter(*cloud_filtered);
@@ -187,21 +249,21 @@ void Cluster::onPointCloud(const sensor_msgs::msg::PointCloud2::ConstSharedPtr i
     }
 
     // 两段聚类共用一个 KdTree
-    pcl::search::KdTree<pcl::PointXYZI>::Ptr tree(new pcl::search::KdTree<pcl::PointXYZI>);
+    pcl::search::KdTree<pcl::PointXYZ>::Ptr tree(new pcl::search::KdTree<pcl::PointXYZ>);
     tree->setInputCloud(cloud_filtered);
 
-    if(region_rowing=="true"){
+    if(region_rowing){
         // 估计法线
         try{
             pcl::PointCloud<pcl::Normal>::Ptr normals(new pcl::PointCloud<pcl::Normal>);
-            pcl::NormalEstimation<pcl::PointXYZI, pcl::Normal> ne;
+            pcl::NormalEstimation<pcl::PointXYZ, pcl::Normal> ne;
             ne.setInputCloud(cloud_filtered);
             ne.setSearchMethod(tree);
             ne.setRadiusSearch(radius_search); // 设置法线估计的搜索半径
             ne.compute(*normals);
 
             // 设置 Region Growing 聚类器
-            pcl::RegionGrowing<pcl::PointXYZI, pcl::Normal> reg;
+            pcl::RegionGrowing<pcl::PointXYZ, pcl::Normal> reg;
             reg.setMinClusterSize(region_rowing_min_cluster_size); // 设置最小簇尺寸
             reg.setMaxClusterSize(region_rowing_max_cluster_size); // 设置最大簇尺寸
             reg.setSearchMethod(tree);
@@ -218,6 +280,7 @@ void Cluster::onPointCloud(const sensor_msgs::msg::PointCloud2::ConstSharedPtr i
             box_msg::msg::Boxs boxarray = clustersToBoxs(cluster_indices, cloud_filtered);
             boxarray.header.stamp=this->get_clock() -> now();
             boxarray.header.frame_id = input_msg->header.frame_id;
+            // printBoxInfo(boxarray);
             publisher_cluster_region_rowing->publish(boxarray);
             publisher_cluster_region_rowing_marker->publish(boxsToMarkerArray(boxarray, input_msg->header.frame_id));
         } catch (const std::runtime_error& e) { // 捕获异常
@@ -228,7 +291,7 @@ void Cluster::onPointCloud(const sensor_msgs::msg::PointCloud2::ConstSharedPtr i
         try{
             // 执行欧氏聚类
             std::vector<pcl::PointIndices> cluster_indices;
-            pcl::EuclideanClusterExtraction<pcl::PointXYZI> ec;
+            pcl::EuclideanClusterExtraction<pcl::PointXYZ> ec;
             ec.setClusterTolerance(cluster_tolerance); // 设置聚类的容差
             ec.setMinClusterSize(min_cluster_size);   // 设置聚类的最小尺寸
             ec.setMaxClusterSize(max_cluster_size);   // 设置聚类的最大尺寸
@@ -240,6 +303,7 @@ void Cluster::onPointCloud(const sensor_msgs::msg::PointCloud2::ConstSharedPtr i
             box_msg::msg::Boxs boxarray = clustersToBoxs(cluster_indices, cloud_filtered);
             boxarray.header.stamp=this->get_clock() -> now();
             boxarray.header.frame_id = input_msg->header.frame_id;
+            // printBoxInfo(boxarray);
             publisher_cluster_euclidean->publish(boxarray);
             publisher_cluster_euclidean_marker->publish(boxsToMarkerArray(boxarray, input_msg->header.frame_id));
         } catch (const std::runtime_error& e) { // 捕获异常

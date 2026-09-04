@@ -27,7 +27,8 @@ private:
     void onSubjson(const std_msgs::msg::String::ConstSharedPtr input_msg);
     visualization_msgs::msg::MarkerArray boxsToMarkerArray(const box_msg::msg::Boxs& boxs, const std::string& frame_id);
     box_msg::msg::Boxs clustersToBoxs(const std::vector<pcl::PointIndices>& cluster_indices,
-                                      const pcl::PointCloud<pcl::PointXYZI>::ConstPtr& cloud);
+                                      const pcl::PointCloud<pcl::PointXYZ>::ConstPtr& cloud);
+    void printBoxInfo(const box_msg::msg::Boxs& boxarray);
     float cluster_tolerance;
     int min_cluster_size;
     int max_cluster_size;
@@ -40,7 +41,7 @@ private:
     float leaf_size;
     std::string downsample;
     std::string euclidean_cluster;
-    std::string region_rowing;
+    bool region_rowing;
     rclcpp::Subscription<std_msgs::msg::String>::SharedPtr subjson;
     rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr pointsubscribe;
     rclcpp::Publisher<box_msg::msg::Boxs>::SharedPtr publisher_cluster_euclidean;
