@@ -76,6 +76,7 @@ public:
     ground_scan_index_ = declare_parameter<int>("ground_scan_index", 100);
     sensor_mount_angle_ = declare_parameter<double>("sensor_mount_angle", 0.0);
     ground_angle_threshold_ = declare_parameter<double>("ground_angle_threshold", 10.0);
+    ground_z_threshold_ = declare_parameter<double>("ground_z_threshold", -1.1);
 
     // ---- 分割参数 ---- //
     segment_theta_ = declare_parameter<double>("segment_theta", 60.0);
@@ -214,7 +215,13 @@ private:
         const float dZ = full_cloud_[upper].z - full_cloud_[lower].z;
         const float vertical_angle = std::atan2(dZ, std::sqrt(dX * dX + dY * dY + dZ * dZ));
 
-        if (std::fabs(vertical_angle - sensor_mount_angle_rad_) <= ground_angle_threshold_rad_) {
+        // 绝对高度约束：只有 z 低于阈值的点才可作为地面候选，避免高处平坦物误判
+        const bool below_z_threshold =
+          full_cloud_[lower].z < ground_z_threshold_ &&
+          full_cloud_[upper].z < ground_z_threshold_;
+
+        if (below_z_threshold &&
+          std::fabs(vertical_angle - sensor_mount_angle_rad_) <= ground_angle_threshold_rad_) {
           ground_mat_[lower] = 1;
           ground_mat_[upper] = 1;
         }
@@ -485,6 +492,7 @@ private:
   int ground_scan_index_ = 100;
   double sensor_mount_angle_ = 0.0;
   double ground_angle_threshold_ = 10.0;
+  double ground_z_threshold_ = 1.1;
 
   // ---- 分割参数 ---- //
   double segment_theta_ = 60.0;

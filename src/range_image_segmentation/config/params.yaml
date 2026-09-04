@@ -32,6 +32,7 @@ range_image_segmentation_front:
     ground_scan_index: 100         # 参与地面判定的最大行号（0~N-1，地面在下方低行号）
     sensor_mount_angle: 0.0        # 雷达安装俯仰角（度），调平后为 0
     ground_angle_threshold: 10.0   # 相邻线夹角与安装角的偏差阈值（度）
+    ground_z_threshold: -1.1        # 地面点高度上限（m）：z 低于该值才可作为地面候选
 
     # ---- 分割 ---- #
     segment_theta: 60.0            # 角度分割阈值（度），越小分割越细
@@ -59,6 +60,7 @@ range_image_segmentation_rear:
     ground_scan_index: 100
     sensor_mount_angle: 0.0
     ground_angle_threshold: 10.0
+    ground_z_threshold: -1.1
 
     segment_theta: 60.0
     segment_valid_point_num: 5

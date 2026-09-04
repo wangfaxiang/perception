@@ -452,6 +452,7 @@
                 "-r", "__node:=debug_range_image_seg_front",
                 "-p", "lidar_name:=front",
                 "-p", "ground_scan_index:=100",
+                "-p", "ground_z_threshold:=-1.1",
                 "-p", "segment_theta:=60.0",
                 "-p", "min_cluster_size:=30"
             ],
@@ -483,6 +484,7 @@
                 "-r", "__node:=debug_range_image_seg_rear",
                 "-p", "lidar_name:=rear",
                 "-p", "ground_scan_index:=100",
+                "-p", "ground_z_threshold:=-1.1",
                 "-p", "segment_theta:=60.0",
                 "-p", "min_cluster_size:=30"
             ],
