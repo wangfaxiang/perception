@@ -53,6 +53,9 @@ lidar_image_projection_front:
     # 图像修补填充所有空洞
     fill_holes: true
 
+    # 体素栅格滤波边长（米），0=禁用
+    voxel_leaf_size: 0.0
+
     # 边缘检测（防矿卡坠坡）
     enable_edge_detection: true
     canny_low_thresh: 100
@@ -100,6 +103,9 @@ lidar_image_projection_rear:
 
     # 图像修补填充所有空洞
     fill_holes: true
+
+    # 体素栅格滤波边长（米），0=禁用
+    voxel_leaf_size: 0.0
 
     # 边缘检测（防矿卡坠坡）
     enable_edge_detection: true

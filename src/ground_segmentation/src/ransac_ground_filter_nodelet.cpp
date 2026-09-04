@@ -98,7 +98,23 @@ bool get_param(const std::vector<rclcpp::Parameter> & p, const std::string & nam
 RANSACGroundFilterComponent::RANSACGroundFilterComponent(const rclcpp::NodeOptions & options)
 : Node("ransac_ground_filter", options)
 {
-  base_frame_ = declare_parameter("base_frame", "base_link");
+  // 雷达标识（front / rear），用于推导默认话题名与 frame_id
+  const std::string lidar_name = declare_parameter<std::string>("lidar_name", "");
+  const std::string prefix = lidar_name.empty() ? "" : ("/" + lidar_name);
+
+  // 输入/输出话题：默认处理调平后的点云；lidar_name 为空时保持向后兼容
+  const std::string default_input_topic =
+    lidar_name.empty() ? "/front/rslidar_points" : (prefix + "/rslidar_points_leveled");
+  const std::string input_topic = declare_parameter<std::string>("input_topic", default_input_topic);
+  const std::string default_output_topic =
+    lidar_name.empty() ? "~/output/no_ground" : (prefix + "/no_ground");
+  const std::string output_topic = declare_parameter<std::string>("output_topic", default_output_topic);
+
+  // 默认 base_frame 与雷达坐标系一致（调平后点云仍位于雷达坐标系）
+  const std::string default_base_frame =
+    lidar_name.empty() ? "base_link" : (lidar_name + "_rslidar");
+  base_frame_ = declare_parameter<std::string>("base_frame", default_base_frame);
+
   unit_axis_ = declare_parameter("unit_axis", "z");
   max_iterations_ = declare_parameter("max_iterations", 1000);
   min_inliers_ = declare_parameter("min_trial", 5000);
@@ -130,14 +146,11 @@ RANSACGroundFilterComponent::RANSACGroundFilterComponent(const rclcpp::NodeOptio
   tf_listener_ = std::make_unique<tf2_ros::TransformListener>(*tf_buffer_);
 
   // Setup publisher and subscriber (subscription kept alive by node)
-  pub_no_ground_ = this->create_publisher<PointCloud2>("~/output/no_ground", rclcpp::QoS(10));
-  // [[maybe_unused]] auto sub = this->create_subscription<PointCloud2>(
-  //   "~/input", rclcpp::QoS(10),
-  //   std::bind(&RANSACGroundFilterComponent::onPointCloud, this, std::placeholders::_1));
+  pub_no_ground_ = this->create_publisher<PointCloud2>(output_topic, rclcpp::QoS(10));
 
   using std::placeholders::_1;
   sub_cloud_ = this->create_subscription<sensor_msgs::msg::PointCloud2>(
-    "/front/rslidar_points", rclcpp::SensorDataQoS(),
+    input_topic, rclcpp::SensorDataQoS(),
     std::bind(&RANSACGroundFilterComponent::onPointCloud, this, _1));
 
   set_param_res_ = this->add_on_set_parameters_callback(
@@ -152,9 +165,9 @@ void RANSACGroundFilterComponent::setDebugPublisher()
     return;
   }
   debug_pose_array_pub_ =
-    create_publisher<geometry_msgs::msg::PoseArray>("debug/plane_pose_array", 10);
+    create_publisher<geometry_msgs::msg::PoseArray>("~/debug/plane_pose_array", 10);
   debug_ground_cloud_pub_ =
-    create_publisher<sensor_msgs::msg::PointCloud2>("debug/ground/pointcloud", 10);
+    create_publisher<sensor_msgs::msg::PointCloud2>("~/debug/ground/pointcloud", 10);
   is_initialized_debug_message_ = true;
 }
 

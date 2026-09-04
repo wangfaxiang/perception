@@ -22,7 +22,7 @@ colcon build --cmake-args -DCMAKE_BUILD_TYPE=Debug --packages-select ground_segm
 
 colcon build --cmake-args -DCMAKE_BUILD_TYPE=Debug --packages-select cluster
 ```
-
+-------------------------------------------------------------------------------------------
 ## 步骤
 source /opt/ros/galactic/setup.bash
 source install/setup.bash
@@ -37,12 +37,23 @@ ros2 launch lidar_leveling lidar_leveling.launch.py
 2.调平后点云
 /front/rslidar_points_leveled
 
+-------------------------------------------------------------------------------------------
+
 ## 启动边坡，沟壑检测节点
 ros2 launch pothole_detection pothole_detection.launch.py
 3.边界点云（点云类型）
 /front/ditch_cloud
 4.边界线（红加黄，MarkerArray类型）
 /front/ditch_line
+
+----------------------------------------------------------------------------------------------
+
+## 启动点云地面提取
+ros2 launch ground_segmentation ransac_ground_filter.launch.py
+输出话题：
+/front/no_ground
+/rear/no_ground
+
 
 ----------------------------------------------------------------------------------------------
 <!-- 播放rosbag -->
