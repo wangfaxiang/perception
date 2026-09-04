@@ -21,6 +21,8 @@ colcon build --cmake-args -DCMAKE_BUILD_TYPE=Debug --packages-select pothole_det
 colcon build --cmake-args -DCMAKE_BUILD_TYPE=Debug --packages-select ground_segmentation
 
 colcon build --cmake-args -DCMAKE_BUILD_TYPE=Debug --packages-select cluster
+
+colcon build --cmake-args -DCMAKE_BUILD_TYPE=Debug --packages-select range_image_segmentation
 ```
 -------------------------------------------------------------------------------------------
 ## 步骤
@@ -65,9 +67,8 @@ ros2 launch cluster cluster.launch.py
 /rear/box/cluster/euclidean/marker（MarkerArray类型）
 
 
-
-
-
+## 聚类方法2
+ros2 launch range_image_segmentation range_image_segmentation.launch.py
 
 ----------------------------------------------------------------------------------------------
 <!-- 播放rosbag -->

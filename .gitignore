@@ -16,3 +16,10 @@ rosbag2_rear/*
 rosbag2_po_rear/metadata.yaml
 rosbag2_po_front/metadata.yaml
 src/centerpoint/scripts/__pycache__/*
+rosbag2_stone_front/metadata.yaml
+rosbag2_stone_rear/metadata.yaml
+rosbag2_po_new_front/metadata.yaml
+rosbag2_po_new_rear/metadata.yaml
+.vscode/browse*
+src/lidar_leveling/launch/__pycache__/*
+rosbag2_obstacle_front/metadata.yaml

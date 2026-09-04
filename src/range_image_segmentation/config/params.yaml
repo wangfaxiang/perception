@@ -1,0 +1,66 @@
+# 距离图像地面分割 + 障碍物聚类参数 —— 速腾聚创 E1R 固态雷达
+#
+# 方法参考 LeGO-LOAM imageProjection（projectPointCloud / groundRemoval / cloudSegmentation），
+# 针对 E1R 适配:
+#   - E1R: 120°(水平) x 90°(垂直) 前视、144 线、全固态。
+#   - 前视非 360° 环绕，水平边界不做 wrap-around。
+#   - 调平点云为 PointXYZI(无 ring)，行号由俯仰角 asin(z/r) 反算。
+#
+# 角度约定(调平后坐标):
+#   vertical_angle_bottom/top 覆盖调平后点云的俯仰分布。
+#   雷达向下俯视安装 pitch=+30°、垂直 FOV 90° 时，调平后俯仰约 [-75°, +15°]。
+
+# ============ 前雷达 (front) ============
+range_image_segmentation_front:
+  ros__parameters:
+    lidar_name: "front"
+    input_topic: "/front/rslidar_points_leveled"
+    ground_topic: "/front/ground_cloud"
+    segmented_topic: "/front/segmented_cloud_pure"
+    boxs_topic: "/front/box/cluster/range_image"
+    marker_topic: "/front/box/cluster/range_image/marker"
+
+    # ---- 投影 ---- #
+    num_vertical_scans: 144        # E1R 线数（range image 行数）
+    num_horizontal_scans: 180      # range image 列数（120° 内每线约 180 点）
+    vertical_angle_bottom: -75.0   # 调平后最下方俯仰角（度）
+    vertical_angle_top: 15.0       # 调平后最上方俯仰角（度）
+    horizontal_fov: 120.0          # 水平视场角（度）
+    min_range: 0.2                 # 最小距离（m），小于该值的点丢弃
+
+    # ---- 地面分割 ---- #
+    ground_scan_index: 100         # 参与地面判定的最大行号（0~N-1，地面在下方低行号）
+    sensor_mount_angle: 0.0        # 雷达安装俯仰角（度），调平后为 0
+    ground_angle_threshold: 10.0   # 相邻线夹角与安装角的偏差阈值（度）
+
+    # ---- 分割 ---- #
+    segment_theta: 60.0            # 角度分割阈值（度），越小分割越细
+    segment_valid_point_num: 5     # 有效簇最小点数（与 valid_line_num 联合判定）
+    segment_valid_line_num: 3      # 有效簇最少跨越行数
+    min_cluster_size: 30           # 簇点数达到该值直接视为有效障碍物
+
+# ============ 后雷达 (rear) ============
+range_image_segmentation_rear:
+  ros__parameters:
+    lidar_name: "rear"
+    input_topic: "/rear/rslidar_points_leveled"
+    ground_topic: "/rear/ground_cloud"
+    segmented_topic: "/rear/segmented_cloud_pure"
+    boxs_topic: "/rear/box/cluster/range_image"
+    marker_topic: "/rear/box/cluster/range_image/marker"
+
+    num_vertical_scans: 144
+    num_horizontal_scans: 180
+    vertical_angle_bottom: -75.0
+    vertical_angle_top: 15.0
+    horizontal_fov: 120.0
+    min_range: 0.2
+
+    ground_scan_index: 100
+    sensor_mount_angle: 0.0
+    ground_angle_threshold: 10.0
+
+    segment_theta: 60.0
+    segment_valid_point_num: 5
+    segment_valid_line_num: 3
+    min_cluster_size: 30

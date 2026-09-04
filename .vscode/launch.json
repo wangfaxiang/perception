@@ -442,6 +442,68 @@
             "stopAtEntry": false,
             "preLaunchTask": ""
         },
+        {
+            "name": "Debug range_image_segmentation_front (launch)",
+            "type": "cppdbg",
+            "request": "launch",
+            "program": "${workspaceFolder}/build/range_image_segmentation/range_image_segmentation_node",
+            "args": [
+                "--ros-args",
+                "-r", "__node:=debug_range_image_seg_front",
+                "-p", "lidar_name:=front",
+                "-p", "ground_scan_index:=100",
+                "-p", "segment_theta:=60.0",
+                "-p", "min_cluster_size:=30"
+            ],
+            "cwd": "${workspaceFolder}",
+            "environment": [
+                {
+                    "name": "LD_LIBRARY_PATH",
+                    "value": "${workspaceFolder}/install/range_image_segmentation/lib:${workspaceFolder}/install/box_msg/lib:${env:LD_LIBRARY_PATH}"
+                }
+            ],
+            "MIMode": "gdb",
+            "setupCommands": [
+                {
+                    "description": "Enable pretty-printing for gdb",
+                    "text": "-enable-pretty-printing",
+                    "ignoreFailures": true
+                }
+            ],
+            "stopAtEntry": false,
+            "preLaunchTask": ""
+        },
+        {
+            "name": "Debug range_image_segmentation_rear (launch)",
+            "type": "cppdbg",
+            "request": "launch",
+            "program": "${workspaceFolder}/build/range_image_segmentation/range_image_segmentation_node",
+            "args": [
+                "--ros-args",
+                "-r", "__node:=debug_range_image_seg_rear",
+                "-p", "lidar_name:=rear",
+                "-p", "ground_scan_index:=100",
+                "-p", "segment_theta:=60.0",
+                "-p", "min_cluster_size:=30"
+            ],
+            "cwd": "${workspaceFolder}",
+            "environment": [
+                {
+                    "name": "LD_LIBRARY_PATH",
+                    "value": "${workspaceFolder}/install/range_image_segmentation/lib:${workspaceFolder}/install/box_msg/lib:${env:LD_LIBRARY_PATH}"
+                }
+            ],
+            "MIMode": "gdb",
+            "setupCommands": [
+                {
+                    "description": "Enable pretty-printing for gdb",
+                    "text": "-enable-pretty-printing",
+                    "ignoreFailures": true
+                }
+            ],
+            "stopAtEntry": false,
+            "preLaunchTask": ""
+        },
     ],
     "compounds": [
         {
@@ -481,6 +543,14 @@
             "configurations": [
                 "Debug cluster_front (launch)",
                 // "Debug cluster_rear (launch)"
+            ],
+            "stopAll": true
+        },
+        {
+            "name": "Debug range_image_segmentation 前后雷达 (front + rear)",
+            "configurations": [
+                "Debug range_image_segmentation_front (launch)",
+                "Debug range_image_segmentation_rear (launch)"
             ],
             "stopAll": true
         }
