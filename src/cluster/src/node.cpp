@@ -9,7 +9,6 @@ Cluster::Cluster() : rclcpp::Node("Cluster")
     using std::placeholders::_1;
 
     // 雷达标识（front / rear），用于推导默认话题名，区分前后雷达实例
-    std::string lidar_name;
     this->declare_parameter<std::string>("lidar_name", "");
     this->get_parameter("lidar_name", lidar_name);
 
@@ -200,6 +199,47 @@ box_msg::msg::Boxs Cluster::clustersToBoxs(
         boxs.l = max_y - min_y;
         boxs.h = max_z - min_z;
         boxs.rt = 0.0;
+
+        // 过滤掉中心点 z > 0 且水平距离在 2m ~ 4.0m 之间的目标（大臂）
+        const float horizontal_dist = std::hypot(boxs.x, boxs.y);
+
+        // 密度 = 簇内点数 / 占据的水平面积（包围盒水平投影面积）
+        const float horizontal_area = boxs.w * boxs.l;
+        const float density = (horizontal_area > 0.0f)
+                                ? static_cast<float>(indices.indices.size()) / horizontal_area
+                                : 0.0f;
+
+
+        if (boxs.z > 0.0f && horizontal_dist >= 2.0f && horizontal_dist <= 4.0f)
+        {
+            continue;
+        }
+        if (density <= 100.0f)
+        {
+            // RCLCPP_INFO(this->get_logger(),
+            //             "[cluster] points=%zu 包围盒垂直最高值 top_z=%.2f m, 密度=%.2f pts/m^2",
+            //             indices.indices.size(), max_z, density);
+            continue;
+        }
+        // 包围盒对角线长度
+        const float diagonal = std::sqrt(boxs.w * boxs.w + boxs.l * boxs.l + boxs.h * boxs.h);
+        // 包围盒相对于雷达坐标系的 x 最小值（雷达中心为原点）
+        const float x_min = boxs.x - boxs.w / 2.0f;
+
+        // 大臂只在正前方遮挡，只有前雷达需要过滤；后雷达无大臂，不进行该过滤
+        if (lidar_name == "front" && diagonal > 2.5f && x_min < 2.0f)
+        {
+            // RCLCPP_INFO(this->get_logger(),
+            //             "[cluster] 大臂过滤: diagonal=%.2f m, x_min=%.2f m",
+            //             diagonal, x_min);
+            continue;
+        }
+        if (diagonal <= 0.25f)
+        {
+            // RCLCPP_INFO(this->get_logger(),
+            //             "[cluster] 小目标过滤: diagonal=%.2f m", diagonal);
+            continue;
+        }        
         boxarray.box.push_back(boxs);
     }
     return boxarray;
@@ -212,10 +252,20 @@ void Cluster::printBoxInfo(const box_msg::msg::Boxs& boxarray)
         const auto& b = boxarray.box[i];
         const float bottom_z = b.z - b.h / 2.0f;            // 包围盒底部离地高度（地面 z≈0）
         const float horizontal_dist = std::hypot(b.x, b.y); // 到雷达中心的水平距离
+        const float diagonal = std::sqrt(b.w * b.w + b.l * b.l + b.h * b.h); // 包围盒对角线长度
+
+        // 包围盒四个顶点（水平面投影）相对于雷达中心的坐标，雷达中心为原点(0,0)
+        const float x_min = b.x - b.w / 2.0f;
+        const float x_max = b.x + b.w / 2.0f;
+        const float y_min = b.y - b.l / 2.0f;
+        const float y_max = b.y + b.l / 2.0f;
+
         RCLCPP_INFO(this->get_logger(),
                     "[box %zu] center=(%.2f, %.2f, %.2f) size=(%.2f, %.2f, %.2f) "
-                    "bottom_z=%.2f m, horizontal_dist=%.2f m",
-                    i, b.x, b.y, b.z, b.w, b.l, b.h, bottom_z, horizontal_dist);
+                    "bottom_z=%.2f m, horizontal_dist=%.2f m, diagonal=%.2f m\n"
+                    "  corners: (%.2f, %.2f) (%.2f, %.2f) (%.2f, %.2f) (%.2f, %.2f)",
+                    i, b.x, b.y, b.z, b.w, b.l, b.h, bottom_z, horizontal_dist, diagonal,
+                    x_min, y_min, x_max, y_min, x_min, y_max, x_max, y_max);
     }
 }
 
@@ -246,6 +296,13 @@ void Cluster::onPointCloud(const sensor_msgs::msg::PointCloud2::ConstSharedPtr i
     else
     {
         cloud_filtered = cloud_clean;
+    }
+
+    // 输入点云为空（或经过 NaN 过滤、降采样后为空）时，直接返回，避免对空点云建 KDTree 报错
+    if (cloud_filtered->empty())
+    {
+        RCLCPP_WARN(this->get_logger(), "filtered cloud is empty, skip clustering");
+        return;
     }
 
     // 两段聚类共用一个 KdTree
@@ -303,6 +360,7 @@ void Cluster::onPointCloud(const sensor_msgs::msg::PointCloud2::ConstSharedPtr i
             box_msg::msg::Boxs boxarray = clustersToBoxs(cluster_indices, cloud_filtered);
             boxarray.header.stamp=this->get_clock() -> now();
             boxarray.header.frame_id = input_msg->header.frame_id;
+            // RCLCPP_INFO(this->get_logger(), "-------------------------------------------------------");
             // printBoxInfo(boxarray);
             publisher_cluster_euclidean->publish(boxarray);
             publisher_cluster_euclidean_marker->publish(boxsToMarkerArray(boxarray, input_msg->header.frame_id));

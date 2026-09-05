@@ -81,6 +81,7 @@ private:
   double outlier_threshold_ = 0.1;
   double plane_slope_threshold_ = 10.0;
   double height_threshold_ = 0.1;
+  double max_range_ = 6.0;
   double voxel_size_x_ = 0.1;
   double voxel_size_y_ = 0.1;
   double voxel_size_z_ = 0.1;

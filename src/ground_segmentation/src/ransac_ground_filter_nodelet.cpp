@@ -125,6 +125,7 @@ RANSACGroundFilterComponent::RANSACGroundFilterComponent(const rclcpp::NodeOptio
   voxel_size_y_ = declare_parameter("voxel_size_y", 0.04);
   voxel_size_z_ = declare_parameter("voxel_size_z", 0.04);
   height_threshold_ = declare_parameter("height_threshold", 0.01);
+  max_range_ = declare_parameter("max_range", 6.0);
   debug_ = declare_parameter("debug", false);
 
   if (unit_axis_ == "x") {
@@ -294,11 +295,24 @@ void RANSACGroundFilterComponent::filter(
   pcl::PointCloud<PointType>::Ptr current_sensor_cloud_ptr(new pcl::PointCloud<PointType>);
   pcl::fromROSMsg(*input_transformed_ptr, *current_sensor_cloud_ptr);
 
+  // 只保留水平距离小于 max_range_ 的点，仅对这些点提取地面与非地面
+  pcl::PointCloud<PointType>::Ptr ranged_cloud(new pcl::PointCloud<PointType>);
+  ranged_cloud->points.reserve(current_sensor_cloud_ptr->points.size());
+  const double max_range_squared = max_range_ * max_range_;
+  for (const auto & p : current_sensor_cloud_ptr->points) {
+    if (p.x * p.x + p.y * p.y <= max_range_squared) {
+      ranged_cloud->points.push_back(p);
+    }
+  }
+  ranged_cloud->width = ranged_cloud->points.size();
+  ranged_cloud->height = 1;
+  ranged_cloud->is_dense = true;
+
   // downsample pointcloud to reduce ransac calculation cost
   pcl::PointCloud<PointType>::Ptr downsampled_cloud(new pcl::PointCloud<PointType>);
-  downsampled_cloud->points.reserve(current_sensor_cloud_ptr->points.size());
+  downsampled_cloud->points.reserve(ranged_cloud->points.size());
   pcl::VoxelGrid<PointType> filter;
-  filter.setInputCloud(current_sensor_cloud_ptr);
+  filter.setInputCloud(ranged_cloud);
   filter.setLeafSize(voxel_size_x_, voxel_size_y_, voxel_size_z_);
   filter.filter(*downsampled_cloud);
 
@@ -337,7 +351,7 @@ void RANSACGroundFilterComponent::filter(
   pcl::PointCloud<PointType>::Ptr no_ground_cloud_ptr(new pcl::PointCloud<PointType>);
 
   // use not downsampled pointcloud for extract pointcloud that higher than height threshold
-  for (const auto & p : current_sensor_cloud_ptr->points) {
+  for (const auto & p : ranged_cloud->points) {
     const Eigen::Vector3d transformed_point =
       plane_affine.inverse() * Eigen::Vector3d(p.x, p.y, p.z);
     if (std::abs(transformed_point.z()) > height_threshold_) {
@@ -393,6 +407,9 @@ rcl_interfaces::msg::SetParametersResult RANSACGroundFilterComponent::paramCallb
   }
   if (get_param(p, "height_threshold", height_threshold_)) {
     RCLCPP_DEBUG(get_logger(), "Setting height_threshold_ to: %lf.", height_threshold_);
+  }
+  if (get_param(p, "max_range", max_range_)) {
+    RCLCPP_DEBUG(get_logger(), "Setting max_range to: %lf.", max_range_);
   }
   if (get_param(p, "plane_slope_threshold", plane_slope_threshold_)) {
     RCLCPP_DEBUG(get_logger(), "Setting plane_slope_threshold to: %lf.", plane_slope_threshold_);

@@ -39,6 +39,7 @@ private:
     int number_of_neighbours;
     float radius_search;
     float leaf_size;
+    std::string lidar_name;
     std::string downsample;
     std::string euclidean_cluster;
     bool region_rowing;

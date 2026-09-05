@@ -327,7 +327,7 @@
                 "-p", "lidar_name:=front",
                 "-p", "cluster_tolerance:=0.20",
                 "-p", "min_cluster_size:=15",
-                "-p", "max_cluster_size:=1000",
+                "-p", "max_cluster_size:=100000",
                 "-p", "region_rowing:=false"
             ],
             "cwd": "${workspaceFolder}",
@@ -357,10 +357,10 @@
                 "--ros-args",
                 "-r", "__node:=debug_cluster_rear",
                 "-p", "lidar_name:=rear",
-                "-p", "cluster_tolerance:=1.0",
+                "-p", "cluster_tolerance:=0.20",
                 "-p", "min_cluster_size:=15",
-                "-p", "max_cluster_size:=1000",
-                "-p", "region_rowing:=true"
+                "-p", "max_cluster_size:=100000",
+                "-p", "region_rowing:=false"
             ],
             "cwd": "${workspaceFolder}",
             "environment": [
@@ -544,7 +544,7 @@
             "name": "Debug cluster 前后雷达 (front + rear)",
             "configurations": [
                 "Debug cluster_front (launch)",
-                // "Debug cluster_rear (launch)"
+                "Debug cluster_rear (launch)"
             ],
             "stopAll": true
         },
