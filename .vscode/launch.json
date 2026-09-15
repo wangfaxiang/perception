@@ -14,6 +14,10 @@
                 "-p", "min_range:=3.0",
                 "-p", "voxel_leaf_size:=0.1",
                 "-p", "horiz_res_deg:=1.0",
+                // 定向检测门控：镜像话题不通/未收到时按停车处理（双向检测）
+                // 若本机有真实 cmd 镜像在跑，单独调试检测算法时建议关闭门控或改指向不存在的镜像话题
+                // "-p", "motion_gate_enable:=false",
+                // "-p", "motion_cmd_topic:=/nonexistent",
                 // "-p", "cliff_enable:=true"
             ],
             "cwd": "${workspaceFolder}",
@@ -47,6 +51,9 @@
                 "-p", "min_range:=3.0",
                 "-p", "voxel_leaf_size:=0.1",
                 "-p", "horiz_res_deg:= 1.0",
+                // 定向检测门控：同 front 配置说明
+                // "-p", "motion_gate_enable:=false",
+                // "-p", "motion_cmd_topic:=/nonexistent",
                 // "-p", "cliff_enable:=true"
             ],
             "cwd": "${workspaceFolder}",
@@ -54,6 +61,40 @@
                 {
                     "name": "LD_LIBRARY_PATH",
                     "value": "${workspaceFolder}/install/pothole_detection/lib:${workspaceFolder}/install/dth_messages/lib:${workspaceFolder}/install/rslidar_msg/lib:${env:LD_LIBRARY_PATH}"
+                }
+            ],
+            "MIMode": "gdb",
+            "setupCommands": [
+                {
+                    "description": "Enable pretty-printing for gdb",
+                    "text": "-enable-pretty-printing",
+                    "ignoreFailures": true
+                }
+            ],
+            "stopAtEntry": false,
+            "preLaunchTask": ""
+        },
+        {
+            "name": "Debug edge_warning_fusion (launch)",
+            "type": "cppdbg",
+            "request": "launch",
+            "program": "${workspaceFolder}/build/pothole_detection/edge_warning_fusion_node",
+            "args": [
+                "--ros-args",
+                "-r", "__node:=debug_edge_warning_fusion",
+                // 调试态默认只接调试实例（不碰契约话题 /perception/edge_warning）：
+                // 与 “Debug pothole 前后雷达 + 融合” 组合调试时直接可用；
+                // 接真实检测实例（生产命名）时改为:
+                //   /pothole_detection_front/edge_warning_raw, /pothole_detection_rear/edge_warning_raw
+                "-p", "front_source_topic:=/debug_pothole_det_front/edge_warning_raw",
+                "-p", "rear_source_topic:=/debug_pothole_det_rear/edge_warning_raw",
+                "-p", "edge_warning_topic:=/debug/edge_warning"
+            ],
+            "cwd": "${workspaceFolder}",
+            "environment": [
+                {
+                    "name": "LD_LIBRARY_PATH",
+                    "value": "${workspaceFolder}/install/pothole_detection/lib:${workspaceFolder}/install/dth_messages/lib:${env:LD_LIBRARY_PATH}"
                 }
             ],
             "MIMode": "gdb",
@@ -518,7 +559,16 @@
             "name": "Debug pothole 前后雷达 (front + rear)",
             "configurations": [
                 "Debug pothole_detection_front (launch)",
-                // "Debug pothole_detection_rear (launch)"
+                "Debug pothole_detection_rear (launch)"
+            ],
+            "stopAll": true
+        },
+        {
+            "name": "Debug pothole 前后雷达 + 融合 (front + rear + fusion)",
+            "configurations": [
+                "Debug pothole_detection_front (launch)",
+                "Debug pothole_detection_rear (launch)",
+                "Debug edge_warning_fusion (launch)"
             ],
             "stopAll": true
         },

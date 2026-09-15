@@ -25,6 +25,12 @@ colcon build --cmake-args -DCMAKE_BUILD_TYPE=Debug --packages-select cluster
 colcon build --cmake-args -DCMAKE_BUILD_TYPE=Debug --packages-select range_image_segmentation
 ```
 -------------------------------------------------------------------------------------------
+
+# 前进：v=+0.3 m/s、ω=0，10 Hz 恒发
+ros2 topic pub -r 10 /control/cmd_gate/cmd_vel geometry_msgs/msg/Twist \
+  '{linear: {x: 0.3}, angular: {z: 0.0}}'
+
+-------------------------------------------------------------------------------------------
 ## 步骤
 source /opt/ros/galactic/setup.bash
 source install/setup.bash

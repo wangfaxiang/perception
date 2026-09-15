@@ -7,6 +7,11 @@
 # lidar_name 用于推导默认话题名与 frame_id:
 #   front → /front/rslidar_points, /front/ditch_cloud, frame_id=front_rslidar
 #   rear  → /rear/rslidar_points,  /rear/ditch_cloud,  frame_id=rear_rslidar
+#
+# 定向检测 + 告警融合（契约 §3.1/§6.2）:
+#   检测实例订阅 gate 镜像 /control/cmd_gate/cmd_vel 自判运动方向并门控
+#   （前进只测前、后退只测后、停车/原地旋转双向均测）→ 各发一路原始告警；
+#   edge_warning_fusion 取等级更高的一路 → /perception/edge_warning（契约话题）。
 
 # ============ 前雷达 (E1R, front) ============
 pothole_detection_front:
@@ -44,15 +49,23 @@ pothole_detection_front:
     cliff_min_points: 3        # 列内最少点数才判悬崖
     cliff_vert_margin_deg: 1.0 # 最远点距 max_vert_angle 的最小角裕量（度）
 
-    # ---- 边坡告警（AutoDTH 契约话题，Default QoS）----
+    # ---- 边坡告警（本实例的原始告警，由 edge_warning_fusion 合并后发布契约话题）----
     # 分级：最近距离 < 5m → DANGER；5~10m → CAUTION；> 10m 或无边坡 → SAFE
-    # 注意：front / rear 两个实例默认发布到同一话题 /perception/edge_warning，会互相覆盖；
-    #       如需区分请改成各自话题（如 /front/edge_warning）再由聚合节点发布。
-    edge_warning_topic: "/perception/edge_warning"
+    edge_warning_raw_topic: "/pothole_detection_front/edge_warning_raw"
     edge_danger_dist: 5.0      # 最近距离 < 5m → DANGER
     edge_caution_dist: 10.0    # 最近距离 < 10m → CAUTION，否则 SAFE
     edge_heartbeat_hz: 10.0    # 心跳频率（契约 §4.3 必须 ≥5Hz，建议 10Hz）
     edge_timeout_s: 0.5        # 点云断流超过该时长 → 输出安全默认值（§3.3）
+
+    # ---- 定向检测门控（契约 §3.1/§6.2）----
+    # 四态：前进(linear.x≥+v)只测前、后退(≤−v)只测后、
+    #       |v|<v 且 |angular.z|≥ω → 原地旋转 / 两轴均低 → 停车（两者前后均检测）
+    # 不参与检测的一侧整帧跳过点云处理，但仍发布 999.0/SAFE 维持原始告警心跳
+    motion_gate_enable: true
+    motion_cmd_topic: "/control/cmd_gate/cmd_vel"
+    motion_v_thresh: 0.05      # 纵向速度阈值（m/s）：|v| < 该值视为无前进/后退意图
+    motion_w_thresh: 0.05      # 角速度阈值（rad/s）：|v| 低于阈值且 |ω| ≥ 该值 → 原地旋转
+    motion_timeout_s: 0.5      # 镜像断流超时（秒）→ 按停车处理（双向检测）
 
 # ============ 后雷达 (E1R, rear) ============
 pothole_detection_rear:
@@ -90,10 +103,36 @@ pothole_detection_rear:
     cliff_min_points: 3        # 列内最少点数才判悬崖
     cliff_vert_margin_deg: 1.0 # 最远点距 max_vert_angle 的最小角裕量（度）
 
-    # ---- 边坡告警（AutoDTH 契约话题，Default QoS）----
-    # 见 front 段说明：两实例共用同一契约话题，按需改为各自话题。
-    edge_warning_topic: "/perception/edge_warning"
+    # ---- 边坡告警（本实例的原始告警，由 edge_warning_fusion 合并后发布契约话题）----
+    # 分级：最近距离 < 5m → DANGER；5~10m → CAUTION；> 10m 或无边坡 → SAFE
+    edge_warning_raw_topic: "/pothole_detection_rear/edge_warning_raw"
     edge_danger_dist: 5.0      # 最近距离 < 5m → DANGER
     edge_caution_dist: 10.0    # 最近距离 < 10m → CAUTION，否则 SAFE
     edge_heartbeat_hz: 10.0    # 心跳频率（契约 §4.3 必须 ≥5Hz，建议 10Hz）
     edge_timeout_s: 0.5        # 点云断流超过该时长 → 输出安全默认值（§3.3）
+
+    # ---- 定向检测门控（契约 §3.1/§6.2），与 front 段同义 ----
+    motion_gate_enable: true
+    motion_cmd_topic: "/control/cmd_gate/cmd_vel"
+    motion_v_thresh: 0.05
+    motion_w_thresh: 0.05
+    motion_timeout_s: 0.5
+
+# ============ 边坡告警融合（/perception/edge_warning 唯一发布者） ============
+# 订阅前后两路原始告警，周期性发布等级更高的一路（同级取距离更近）。
+# 契约 §4.1/§4.2/§4.3：话题名/类型冻结、默认 QoS、≥5Hz 心跳（含无风险安全态）。
+edge_warning_fusion:
+  ros__parameters:
+    edge_warning_topic: "/perception/edge_warning"
+    front_source_topic: "/pothole_detection_front/edge_warning_raw"
+    rear_source_topic: "/pothole_detection_rear/edge_warning_raw"
+    frame_id: "base_link"      # 车体系（距离为标量，无需坐标变换）
+    edge_heartbeat_hz: 10.0    # 融合/发布频率（契约 §4.3 必须 ≥5Hz，建议 10Hz）
+    source_timeout_s: 0.5      # 单侧原始告警断流超时（秒）→ 该侧按 999.0/SAFE 参与融合
+
+    # 运动方向镜像：仅用于日志标注（前进/后退/原地旋转/停车/无信号），
+    # 门控在检测实例内完成，融合本身与方向解耦；阈值须与检测实例保持一致
+    motion_cmd_topic: "/control/cmd_gate/cmd_vel"
+    motion_v_thresh: 0.05
+    motion_w_thresh: 0.05
+    motion_timeout_s: 0.5
