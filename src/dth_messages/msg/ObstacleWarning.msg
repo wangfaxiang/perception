@@ -1,0 +1,10 @@
+std_msgs/Header header
+bool    detected
+uint8   obstacle_type
+uint8 TYPE_PERSON=1
+uint8 TYPE_VEHICLE=2
+uint8 TYPE_OTHER=3
+float32 obstacle_x
+float32 obstacle_y
+float32 dist_m
+string  description

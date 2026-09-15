@@ -20,7 +20,7 @@
             "environment": [
                 {
                     "name": "LD_LIBRARY_PATH",
-                    "value": "${workspaceFolder}/install/pothole_detection/lib:${workspaceFolder}/install/rslidar_msg/lib:${env:LD_LIBRARY_PATH}"
+                    "value": "${workspaceFolder}/install/pothole_detection/lib:${workspaceFolder}/install/dth_messages/lib:${workspaceFolder}/install/rslidar_msg/lib:${env:LD_LIBRARY_PATH}"
                 }
             ],
             "MIMode": "gdb",
@@ -53,7 +53,7 @@
             "environment": [
                 {
                     "name": "LD_LIBRARY_PATH",
-                    "value": "${workspaceFolder}/install/pothole_detection/lib:${workspaceFolder}/install/rslidar_msg/lib:${env:LD_LIBRARY_PATH}"
+                    "value": "${workspaceFolder}/install/pothole_detection/lib:${workspaceFolder}/install/dth_messages/lib:${workspaceFolder}/install/rslidar_msg/lib:${env:LD_LIBRARY_PATH}"
                 }
             ],
             "MIMode": "gdb",
@@ -518,7 +518,7 @@
             "name": "Debug pothole 前后雷达 (front + rear)",
             "configurations": [
                 "Debug pothole_detection_front (launch)",
-                "Debug pothole_detection_rear (launch)"
+                // "Debug pothole_detection_rear (launch)"
             ],
             "stopAll": true
         },

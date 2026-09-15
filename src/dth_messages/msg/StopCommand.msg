@@ -1,0 +1,10 @@
+std_msgs/Header header
+bool    stop
+uint8   reason
+uint8 REASON_NONE=0
+uint8 REASON_OBSTACLE_PERSON=1
+uint8 REASON_OBSTACLE_VEHICLE=2
+uint8 REASON_OBSTACLE_OTHER=3
+uint8 REASON_EDGE_DANGER=4
+string  description
+float32 confidence

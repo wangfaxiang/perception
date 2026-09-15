@@ -39,10 +39,20 @@ pothole_detection_front:
     cliff_cloud_topic: "/front/cliff_cloud"
 
     voxel_leaf_size: 0.05      # 体素降采样叶子尺寸（米），<=0 关闭
-    cliff_enable: true         # 是否启用悬崖检测
+    cliff_enable: false         # 是否启用悬崖检测
     cliff_max_range: 7.0       # 悬崖边缘最大水平距离（米）
     cliff_min_points: 3        # 列内最少点数才判悬崖
     cliff_vert_margin_deg: 1.0 # 最远点距 max_vert_angle 的最小角裕量（度）
+
+    # ---- 边坡告警（AutoDTH 契约话题，Default QoS）----
+    # 分级：最近距离 < 5m → DANGER；5~10m → CAUTION；> 10m 或无边坡 → SAFE
+    # 注意：front / rear 两个实例默认发布到同一话题 /perception/edge_warning，会互相覆盖；
+    #       如需区分请改成各自话题（如 /front/edge_warning）再由聚合节点发布。
+    edge_warning_topic: "/perception/edge_warning"
+    edge_danger_dist: 5.0      # 最近距离 < 5m → DANGER
+    edge_caution_dist: 10.0    # 最近距离 < 10m → CAUTION，否则 SAFE
+    edge_heartbeat_hz: 10.0    # 心跳频率（契约 §4.3 必须 ≥5Hz，建议 10Hz）
+    edge_timeout_s: 0.5        # 点云断流超过该时长 → 输出安全默认值（§3.3）
 
 # ============ 后雷达 (E1R, rear) ============
 pothole_detection_rear:
@@ -75,7 +85,15 @@ pothole_detection_rear:
     cliff_cloud_topic: "/rear/cliff_cloud"
 
     voxel_leaf_size: 0.05      # 体素降采样叶子尺寸（米），<=0 关闭
-    cliff_enable: true         # 是否启用悬崖检测
+    cliff_enable: false         # 是否启用悬崖检测
     cliff_max_range: 7.0       # 悬崖边缘最大水平距离（米）
     cliff_min_points: 3        # 列内最少点数才判悬崖
     cliff_vert_margin_deg: 1.0 # 最远点距 max_vert_angle 的最小角裕量（度）
+
+    # ---- 边坡告警（AutoDTH 契约话题，Default QoS）----
+    # 见 front 段说明：两实例共用同一契约话题，按需改为各自话题。
+    edge_warning_topic: "/perception/edge_warning"
+    edge_danger_dist: 5.0      # 最近距离 < 5m → DANGER
+    edge_caution_dist: 10.0    # 最近距离 < 10m → CAUTION，否则 SAFE
+    edge_heartbeat_hz: 10.0    # 心跳频率（契约 §4.3 必须 ≥5Hz，建议 10Hz）
+    edge_timeout_s: 0.5        # 点云断流超过该时长 → 输出安全默认值（§3.3）

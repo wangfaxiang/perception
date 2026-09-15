@@ -29,6 +29,7 @@
 #include <visualization_msgs/msg/marker.hpp>
 #include <visualization_msgs/msg/marker_array.hpp>
 #include <geometry_msgs/msg/point.hpp>
+#include <dth_messages/msg/edge_warning.hpp>
 #include <pcl_conversions/pcl_conversions.h>
 #include <pcl/point_cloud.h>
 #include <pcl/point_types.h>
@@ -36,7 +37,10 @@
 #include <pcl/filters/voxel_grid.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
+#include <limits>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -91,6 +95,13 @@ public:
     this->declare_parameter("cliff_vert_margin_deg", 1.0);  // 最远点距 max_vert_angle 的最小角裕量（度）
     this->declare_parameter<std::string>("cliff_cloud_topic", prefix + "/cliff_cloud");
 
+    // 边坡告警（AutoDTH 契约话题 /perception/edge_warning，Default QoS）
+    this->declare_parameter<std::string>("edge_warning_topic", "/perception/edge_warning");
+    this->declare_parameter("edge_danger_dist", 6.0);   // 最近距离 < 该值 → DANGER
+    this->declare_parameter("edge_caution_dist", 10.0); // 最近距离 < 该值 → CAUTION，否则 SAFE
+    this->declare_parameter("edge_heartbeat_hz", 10.0); // 心跳频率（契约 §4.3 必须 ≥5Hz，建议 10Hz）
+    this->declare_parameter("edge_timeout_s", 0.5);     // 点云断流判定超时（秒）→ 转安全默认值（§3.3）
+
     this->get_parameter("input_topic", input_topic_);
     this->get_parameter("ditch_cloud_topic", ditch_topic_);
     this->get_parameter("ditch_line_topic", line_topic_);
@@ -114,6 +125,15 @@ public:
     this->get_parameter("cliff_min_points", cliff_min_pts_);
     this->get_parameter("cliff_vert_margin_deg", cliff_vert_margin_deg_);
     this->get_parameter("cliff_cloud_topic", cliff_topic_);
+    this->get_parameter("edge_warning_topic", edge_topic_);
+    this->get_parameter("edge_danger_dist", edge_danger_dist_);
+    this->get_parameter("edge_caution_dist", edge_caution_dist_);
+    this->get_parameter("edge_heartbeat_hz", edge_heartbeat_hz_);
+    this->get_parameter("edge_timeout_s", edge_timeout_s_);
+
+    // 心跳周期（频率非法时回退 10 Hz）
+    if (!(edge_heartbeat_hz_ > 0.0)) edge_heartbeat_hz_ = 10.0;
+    edge_heartbeat_period_s_ = 1.0 / edge_heartbeat_hz_;
 
     cols_ = static_cast<int>(horiz_fov_deg_ / horiz_res_deg_);
     horiz_min_rad_ = -horiz_fov_deg_ / 2.0 * kDeg2Rad;
@@ -129,13 +149,23 @@ public:
     pub_cliff_ = this->create_publisher<sensor_msgs::msg::PointCloud2>(cliff_topic_, 10);
     pub_voxel_ = this->create_publisher<sensor_msgs::msg::PointCloud2>(voxel_topic_, 10);
     pub_line_ = this->create_publisher<visualization_msgs::msg::MarkerArray>(line_topic_, 10);
+    pub_edge_ = this->create_publisher<dth_messages::msg::EdgeWarning>(edge_topic_, 10);
+
+    // 心跳：与点云解耦周期发布（契约 §4.3 必须 ≥5Hz）。点云断流时输出安全默认值（§3.3），
+    // 保证感知静默死亡/雷达掉线时系统侧仍能通过话题判断模块在线。
+    edge_heartbeat_timer_ = this->create_wall_timer(
+        std::chrono::duration<double>(edge_heartbeat_period_s_),
+        std::bind(&PotholeDetection::onEdgeHeartbeat, this));
 
     RCLCPP_INFO(this->get_logger(),
                 "Ditch/cliff detection started (lidar=%s, height=%.2fm, ratio>%.1f, "
-                "width>%.2fm, cliff=%s, cliff_range<%.1fm, voxel=%.2fm)",
+                "width>%.2fm, cliff=%s, cliff_range<%.1fm, voxel=%.2fm, "
+                "edge_warning=%s [danger<%.1fm, caution<%.1fm, heartbeat=%.1fHz, timeout=%.2fs])",
                 lidar_name.empty() ? "single" : lidar_name.c_str(),
                 mount_height_, ratio_thresh_, min_width_,
-                cliff_enable_ ? "on" : "off", cliff_max_range_, voxel_leaf_size_);
+                cliff_enable_ ? "on" : "off", cliff_max_range_, voxel_leaf_size_,
+                edge_topic_.c_str(), edge_danger_dist_, edge_caution_dist_,
+                edge_heartbeat_hz_, edge_timeout_s_);
   }
 
 private:
@@ -311,6 +341,71 @@ private:
       (cand.is_cliff ? cliff_points : ditch_points).push_back(cand);
     }
 
+    // 边坡告警分档: 最近距离 < edge_danger_dist → DANGER;
+    //              ≤ edge_caution_dist → CAUTION; 其余（含无边坡）→ SAFE
+    // 契约 §5.2: warning = (level ≠ LEVEL_SAFE)；header 在 publishEdgeLocked() 中统一填充。
+    dth_messages::msg::EdgeWarning edge_msg;
+
+    if (!ditch_points.empty() || !cliff_points.empty())
+    {
+      double sum_dist = 0.0;
+      double min_dist = std::numeric_limits<double>::max();
+      for (const auto &cand : ditch_points)
+      {
+        const double d = horizontalDistance(cand.point);
+        sum_dist += d;
+        min_dist = std::min(min_dist, d);
+      }
+      for (const auto &cand : cliff_points)
+      {
+        const double d = horizontalDistance(cand.point);
+        sum_dist += d;
+        min_dist = std::min(min_dist, d);
+      }
+      const double mean_dist =
+          sum_dist / static_cast<double>(ditch_points.size() + cliff_points.size());
+
+      edge_msg.dist_to_edge_m = static_cast<float>(min_dist);
+      if (min_dist < edge_danger_dist_)
+      {
+        edge_msg.warning = true;
+        edge_msg.level = dth_messages::msg::EdgeWarning::LEVEL_DANGER;
+      }
+      else if (min_dist <= edge_caution_dist_)
+      {
+        edge_msg.warning = true;
+        edge_msg.level = dth_messages::msg::EdgeWarning::LEVEL_CAUTION;
+      }
+      else
+      {
+        edge_msg.warning = false;
+        edge_msg.level = dth_messages::msg::EdgeWarning::LEVEL_SAFE;
+      }
+
+      RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 1000,
+                           "检测到边坡: 最近距离=%.2f m, 平均距离=%.2f m (沟壑 %zu pts, 悬崖 %zu pts) → %s",
+                           min_dist, mean_dist, ditch_points.size(), cliff_points.size(),
+                           levelName(edge_msg.level));
+    }
+    else
+    {
+      edge_msg.dist_to_edge_m = 999.0f;  // 无数据哨兵值（契约 §9）
+      edge_msg.warning = false;
+      edge_msg.level = dth_messages::msg::EdgeWarning::LEVEL_SAFE;
+
+      RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 1000,
+                           "没有检测到边坡 → SAFE");
+    }
+
+    // 立即发布本帧结果，并记录状态供心跳定时器补发（契约 §4.3 header.stamp = 节点时钟 now()）
+    {
+      std::lock_guard<std::mutex> lock(edge_mutex_);
+      cloud_seen_ = true;
+      last_cloud_time_ = this->now();
+      publishEdgeLocked(edge_msg);
+      last_edge_ = edge_msg;
+    }
+
     // 发布点云: 沟壑 intensity 编码间距比，悬崖固定 255
     pcl::PointCloud<pcl::PointXYZI> ditch_cloud;
     for (const auto &cand : ditch_points)
@@ -382,6 +477,61 @@ private:
     }
 
     pub_line_->publish(lines);
+  }
+
+  // 填充 header 并发布（调用方需持有 edge_mutex_）
+  // 契约 §4.3: header.stamp 必须每帧填节点时钟 now()（尊重 use_sim_time）
+  void publishEdgeLocked(dth_messages::msg::EdgeWarning &msg)
+  {
+    msg.header.stamp = this->now();
+    msg.header.frame_id = frame_id_;
+    pub_edge_->publish(msg);
+    last_edge_publish_time_ = msg.header.stamp;
+  }
+
+  // 心跳定时器: 与点云处理解耦，保证 /perception/edge_warning 周期发布（契约 §4.3 ≥5Hz）。
+  // 点云正常时由 onCloud 按帧发布，此处仅在超过 1.5 个心跳周期未发布时补发最新状态；
+  // 点云断流超过 edge_timeout_s 时切换为安全默认值（契约 §3.3）。
+  void onEdgeHeartbeat()
+  {
+    std::lock_guard<std::mutex> lock(edge_mutex_);
+    const rclcpp::Time now = this->now();
+
+    const bool sensor_ok =
+        cloud_seen_ && (now - last_cloud_time_).seconds() <= edge_timeout_s_;
+
+    if (!sensor_ok)
+    {
+      // 启动后首帧点云到来前静默发安全态；已收到过点云才提示断流
+      if (cloud_seen_ && !stale_warned_)
+      {
+        RCLCPP_WARN(this->get_logger(),
+                    "点云 %s 断流超过 %.2f s，/perception/edge_warning 转安全默认值",
+                    input_topic_.c_str(), edge_timeout_s_);
+        stale_warned_ = true;
+      }
+
+      dth_messages::msg::EdgeWarning safe;
+      safe.warning = false;
+      safe.dist_to_edge_m = 999.0f;  // 无数据哨兵值（契约 §9）
+      safe.level = dth_messages::msg::EdgeWarning::LEVEL_SAFE;
+      publishEdgeLocked(safe);
+      return;
+    }
+
+    if (stale_warned_)
+    {
+      RCLCPP_INFO(this->get_logger(),
+                  "点云 %s 恢复，/perception/edge_warning 恢复正常检测输出",
+                  input_topic_.c_str());
+      stale_warned_ = false;
+    }
+
+    if ((now - last_edge_publish_time_).seconds() >= edge_heartbeat_period_s_ * 1.5)
+    {
+      dth_messages::msg::EdgeWarning msg = last_edge_;
+      publishEdgeLocked(msg);
+    }
   }
 
   visualization_msgs::msg::Marker lineMarker(const std::vector<Candidate> &pts,
@@ -489,9 +639,6 @@ private:
     m.points.push_back(pa);
     m.points.push_back(pb);
 
-    RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 1000,
-                         "%s: angle=%.1f° (%zu pts)",
-                         ns.c_str(), std::atan2(uy, ux) * 180.0 / M_PI, n);
     return m;
   }
 
@@ -504,14 +651,26 @@ private:
     return m;
   }
 
+  static const char *levelName(uint8_t level)
+  {
+    switch (level)
+    {
+      case dth_messages::msg::EdgeWarning::LEVEL_DANGER:  return "DANGER";
+      case dth_messages::msg::EdgeWarning::LEVEL_CAUTION: return "CAUTION";
+      default: return "SAFE";
+    }
+  }
+
   rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr sub_cloud_;
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pub_ditch_;
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pub_cliff_;
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pub_voxel_;
   rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr pub_line_;
+  rclcpp::Publisher<dth_messages::msg::EdgeWarning>::SharedPtr pub_edge_;
+  rclcpp::TimerBase::SharedPtr edge_heartbeat_timer_;
 
   std::string input_topic_, ditch_topic_, line_topic_, frame_id_;
-  std::string cliff_topic_, voxel_topic_;
+  std::string cliff_topic_, voxel_topic_, edge_topic_;
   double mount_height_;
   double horiz_fov_deg_, horiz_res_deg_;
   double min_vert_deg_, max_vert_deg_;
@@ -519,12 +678,22 @@ private:
   double ratio_thresh_, min_width_, min_gap_, cluster_dist_;
   double voxel_leaf_size_;
   double cliff_max_range_, cliff_vert_margin_deg_, cliff_vert_margin_rad_;
+  double edge_danger_dist_, edge_caution_dist_;
+  double edge_heartbeat_hz_, edge_heartbeat_period_s_, edge_timeout_s_;
   int min_pts_;
   int cliff_min_pts_;
   bool cliff_enable_;
   int cols_;
   double horiz_min_rad_, horiz_res_rad_;
   double min_vert_rad_, max_vert_rad_;
+
+  // 边坡告警心跳状态（onCloud 与心跳定时器共享，加锁保护）
+  std::mutex edge_mutex_;
+  dth_messages::msg::EdgeWarning last_edge_;  // 最近一次检测结果
+  rclcpp::Time last_cloud_time_;              // 最近一帧点云到达时刻（节点时钟）
+  rclcpp::Time last_edge_publish_time_;       // 最近一次 edge_warning 发布时刻
+  bool cloud_seen_{false};                    // 是否已收到过点云
+  bool stale_warned_{false};                  // 断流告警只打一次
 };
 
 int main(int argc, char **argv)

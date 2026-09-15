@@ -16,6 +16,7 @@ find_package(rclcpp REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(visualization_msgs REQUIRED)
 find_package(pcl_conversions REQUIRED)
+find_package(dth_messages REQUIRED)
 find_package(PCL REQUIRED COMPONENTS common filters)
 
 include_directories(${PCL_INCLUDE_DIRS})
@@ -31,6 +32,7 @@ ament_target_dependencies(pothole_detection_node
   sensor_msgs
   visualization_msgs
   pcl_conversions
+  dth_messages
 )
 
 target_link_libraries(pothole_detection_node
