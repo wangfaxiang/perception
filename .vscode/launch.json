@@ -11,7 +11,10 @@
                 "-r", "__node:=debug_pothole_det_front",
                 "-p", "lidar_name:=front",
                 "-p", "ditch_ratio_thresh:=9.0",
-                "-p", "min_range:=3.0"                
+                "-p", "min_range:=3.0",
+                "-p", "voxel_leaf_size:=0.1",
+                "-p", "horiz_res_deg:=1.0",
+                // "-p", "cliff_enable:=true"
             ],
             "cwd": "${workspaceFolder}",
             "environment": [
@@ -40,8 +43,11 @@
                 "--ros-args",
                 "-r", "__node:=debug_pothole_det_rear",
                 "-p", "lidar_name:=rear",
-                "-p", "ditch_ratio_thresh:=15.0",
-                "-p", "min_range:=3.0"                    
+                "-p", "ditch_ratio_thresh:=9.0",
+                "-p", "min_range:=3.0",
+                "-p", "voxel_leaf_size:=0.1",
+                "-p", "horiz_res_deg:= 1.0",
+                // "-p", "cliff_enable:=true"
             ],
             "cwd": "${workspaceFolder}",
             "environment": [

@@ -55,6 +55,15 @@ ros2 run pothole_detection pothole_detection_node \
 | `ditch_min_width` | 0.5 | 最小沟宽（米） |
 | `cluster_dist` | 1.5 | 沟沿点聚类距离（米） |
 | `min_points_per_ditch` | 5 | 每段沟最少点数（横向连续列数） |
+| `voxel_leaf_size` | 0.05 | 体素降采样叶子尺寸（米），<=0 关闭 |
+| `cliff_enable` | true | 是否启用悬崖检测 |
+| `cliff_max_range` | 7.0 | 悬崖边缘最大水平距离（米） |
+| `cliff_min_points` | 3 | 列内最少点数才判悬崖 |
+| `cliff_vert_margin_deg` | 1.0 | 最远点距 `max_vert_angle` 的最小角裕量（度） |
+
+悬崖（下方无回波）检测结果发布为 `/front/cliff_cloud` / `/rear/cliff_cloud`（intensity 固定 255），
+RViz 中悬崖边界为橙色折线，沟壑边界为红色折线。
+体素化降采样后的点云发布到 `/front/voxel_cloud` / `/rear/voxel_cloud`（便于调试查看降采样效果）。
 
 ## 在 RViz 中查看
 

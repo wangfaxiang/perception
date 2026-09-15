@@ -15,6 +15,7 @@ pothole_detection_front:
     input_topic: "/front/rslidar_points_leveled"
     ditch_cloud_topic: "/front/ditch_cloud"
     ditch_line_topic: "/front/ditch_line"
+    voxel_cloud_topic: "/front/voxel_cloud"
     frame_id: "front_rslidar"
 
     mount_height: 1.2          # 雷达安装高度（米）
@@ -35,6 +36,14 @@ pothole_detection_front:
     cluster_dist: 1.5          # 沟沿点聚类距离（米）
     min_points_per_ditch: 5    # 每段沟最少点数（≈横向连续列数）
 
+    cliff_cloud_topic: "/front/cliff_cloud"
+
+    voxel_leaf_size: 0.05      # 体素降采样叶子尺寸（米），<=0 关闭
+    cliff_enable: true         # 是否启用悬崖检测
+    cliff_max_range: 7.0       # 悬崖边缘最大水平距离（米）
+    cliff_min_points: 3        # 列内最少点数才判悬崖
+    cliff_vert_margin_deg: 1.0 # 最远点距 max_vert_angle 的最小角裕量（度）
+
 # ============ 后雷达 (E1R, rear) ============
 pothole_detection_rear:
   ros__parameters:
@@ -42,6 +51,7 @@ pothole_detection_rear:
     input_topic: "/rear/rslidar_points_leveled"
     ditch_cloud_topic: "/rear/ditch_cloud"
     ditch_line_topic: "/rear/ditch_line"
+    voxel_cloud_topic: "/rear/voxel_cloud"
     frame_id: "rear_rslidar"
 
     mount_height: 1.2
@@ -61,3 +71,11 @@ pothole_detection_rear:
 
     cluster_dist: 1.5
     min_points_per_ditch: 5
+
+    cliff_cloud_topic: "/rear/cliff_cloud"
+
+    voxel_leaf_size: 0.05      # 体素降采样叶子尺寸（米），<=0 关闭
+    cliff_enable: true         # 是否启用悬崖检测
+    cliff_max_range: 7.0       # 悬崖边缘最大水平距离（米）
+    cliff_min_points: 3        # 列内最少点数才判悬崖
+    cliff_vert_margin_deg: 1.0 # 最远点距 max_vert_angle 的最小角裕量（度）

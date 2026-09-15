@@ -36,4 +36,5 @@ lidar_leveling_rear:
 
     roll_deg: 0.0
     pitch_deg: 37.0
+    # pitch_deg: 0.0            # 安装俯仰角（度），绕 Y 轴        
     yaw_deg: 0.0

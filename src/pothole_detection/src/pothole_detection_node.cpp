@@ -1,10 +1,10 @@
 /**
  * @file pothole_detection_node.cpp
- * @brief 基于相邻线束地面落点水平间距比检测沟壑（负障碍物）
+ * @brief 基于相邻线束地面落点水平间距比检测沟壑（负障碍物）与悬崖
  *
  * 适用: 速腾聚创 E1R 固态雷达（120°×90°，1200×144），水平安装在车体上。
  *
- * 原理:
+ * 沟壑原理:
  *   雷达安装高度为 h、光轴水平时，俯角为 β 的线束打到水平地面的水平距离为
  *       x(β) = h · cot(β)
  *   同一水平角（同一列）方向上相邻两条线束（近→远，俯角 β_i > β_{i+1}）的理论落点间距为
@@ -16,6 +16,10 @@
  *
  *   沟的近沿点即为危险边界，按横向连续列数聚类后发布为 PointCloud2，
  *   intensity 编码归一化的间距比。
+ *
+ * 悬崖原理:
+ *   悬崖下方无回波，某一列在近距离处就停止出现回波（最远点明显近于探测范围）。
+ *   若该列没有检测到沟壑边缘，则把该列最远点作为悬崖边缘候选。
  *
  * 支持多雷达: 通过 lidar_name 参数（front/rear）区分前/后雷达，同一节点可启动多个实例。
  */
@@ -29,6 +33,7 @@
 #include <pcl/point_cloud.h>
 #include <pcl/point_types.h>
 #include <pcl/filters/filter.h>
+#include <pcl/filters/voxel_grid.h>
 
 #include <algorithm>
 #include <cmath>
@@ -62,6 +67,7 @@ public:
     this->declare_parameter<std::string>("input_topic", prefix + "/rslidar_points_leveled");
     this->declare_parameter<std::string>("ditch_cloud_topic", prefix + "/ditch_cloud");
     this->declare_parameter<std::string>("ditch_line_topic", prefix + "/ditch_line");
+    this->declare_parameter<std::string>("voxel_cloud_topic", prefix + "/voxel_cloud");
     this->declare_parameter<std::string>("frame_id",
                                          lidar_name.empty() ? "rslidar" : (lidar_name + "_rslidar"));
 
@@ -78,9 +84,17 @@ public:
     this->declare_parameter("cluster_dist", 1.5);         // 沟沿点聚类距离（米）
     this->declare_parameter("min_points_per_ditch", 5);   // 每段沟最少点数（≈横向连续列数）
 
+    this->declare_parameter("voxel_leaf_size", 0.05);       // 体素降采样叶子尺寸（米），<=0 关闭
+    this->declare_parameter("cliff_enable", false);          // 是否启用悬崖检测
+    this->declare_parameter("cliff_max_range", 7.0);        // 悬崖边缘最大水平距离（米）
+    this->declare_parameter("cliff_min_points", 3);         // 列内最少点数才判悬崖
+    this->declare_parameter("cliff_vert_margin_deg", 1.0);  // 最远点距 max_vert_angle 的最小角裕量（度）
+    this->declare_parameter<std::string>("cliff_cloud_topic", prefix + "/cliff_cloud");
+
     this->get_parameter("input_topic", input_topic_);
     this->get_parameter("ditch_cloud_topic", ditch_topic_);
     this->get_parameter("ditch_line_topic", line_topic_);
+    this->get_parameter("voxel_cloud_topic", voxel_topic_);
     this->get_parameter("frame_id", frame_id_);
     this->get_parameter("mount_height", mount_height_);
     this->get_parameter("horiz_fov_deg", horiz_fov_deg_);
@@ -94,30 +108,42 @@ public:
     this->get_parameter("min_gap_m", min_gap_);
     this->get_parameter("cluster_dist", cluster_dist_);
     this->get_parameter("min_points_per_ditch", min_pts_);
+    this->get_parameter("voxel_leaf_size", voxel_leaf_size_);
+    this->get_parameter("cliff_enable", cliff_enable_);
+    this->get_parameter("cliff_max_range", cliff_max_range_);
+    this->get_parameter("cliff_min_points", cliff_min_pts_);
+    this->get_parameter("cliff_vert_margin_deg", cliff_vert_margin_deg_);
+    this->get_parameter("cliff_cloud_topic", cliff_topic_);
 
     cols_ = static_cast<int>(horiz_fov_deg_ / horiz_res_deg_);
     horiz_min_rad_ = -horiz_fov_deg_ / 2.0 * kDeg2Rad;
     horiz_res_rad_ = horiz_res_deg_ * kDeg2Rad;
     min_vert_rad_ = min_vert_deg_ * kDeg2Rad;
     max_vert_rad_ = max_vert_deg_ * kDeg2Rad;
+    cliff_vert_margin_rad_ = cliff_vert_margin_deg_ * kDeg2Rad;
 
     sub_cloud_ = this->create_subscription<sensor_msgs::msg::PointCloud2>(
         input_topic_, rclcpp::SensorDataQoS(),
         std::bind(&PotholeDetection::onCloud, this, std::placeholders::_1));
     pub_ditch_ = this->create_publisher<sensor_msgs::msg::PointCloud2>(ditch_topic_, 10);
+    pub_cliff_ = this->create_publisher<sensor_msgs::msg::PointCloud2>(cliff_topic_, 10);
+    pub_voxel_ = this->create_publisher<sensor_msgs::msg::PointCloud2>(voxel_topic_, 10);
     pub_line_ = this->create_publisher<visualization_msgs::msg::MarkerArray>(line_topic_, 10);
 
     RCLCPP_INFO(this->get_logger(),
-                "Ditch detection started (lidar=%s, height=%.2fm, ratio>%.1f, width>%.2fm)",
+                "Ditch/cliff detection started (lidar=%s, height=%.2fm, ratio>%.1f, "
+                "width>%.2fm, cliff=%s, cliff_range<%.1fm, voxel=%.2fm)",
                 lidar_name.empty() ? "single" : lidar_name.c_str(),
-                mount_height_, ratio_thresh_, min_width_);
+                mount_height_, ratio_thresh_, min_width_,
+                cliff_enable_ ? "on" : "off", cliff_max_range_, voxel_leaf_size_);
   }
 
 private:
   struct Candidate
   {
     pcl::PointXYZI point;
-    float ratio;
+    float ratio;    // 沟壑: 间距比; 悬崖: <0
+    bool is_cliff;  // true: 悬崖候选（下方无回波）
   };
 
   void onCloud(const sensor_msgs::msg::PointCloud2::SharedPtr msg)
@@ -127,6 +153,26 @@ private:
 
     std::vector<int> nan_indices;
     pcl::removeNaNFromPointCloud(*cloud, *cloud, nan_indices);
+
+    // 体素化降采样: 降低点云密度、抑制噪声（叶子尺寸 <=0 则跳过）
+    if (voxel_leaf_size_ > 0.0)
+    {
+      pcl::PointCloud<pcl::PointXYZI>::Ptr voxel(new pcl::PointCloud<pcl::PointXYZI>());
+      pcl::VoxelGrid<pcl::PointXYZI> vg;
+      vg.setInputCloud(cloud);
+      vg.setLeafSize(static_cast<float>(voxel_leaf_size_),
+                     static_cast<float>(voxel_leaf_size_),
+                     static_cast<float>(voxel_leaf_size_));
+      vg.filter(*voxel);
+      cloud = voxel;
+
+      // 发布体素化降采样后的点云
+      sensor_msgs::msg::PointCloud2 out;
+      pcl::toROSMsg(*cloud, out);
+      out.header.stamp = msg->header.stamp;
+      out.header.frame_id = frame_id_;
+      pub_voxel_->publish(out);
+    }
 
     // 按列（水平角）分桶，每列保存该方向上的地面点
     std::vector<std::vector<pcl::PointXYZI>> cols(cols_);
@@ -148,8 +194,10 @@ private:
 
     // 逐列检测: 相邻线束落点间距比异常 → 沟候选
     std::vector<Candidate> candidates;
-    for (auto &col_pts : cols)
+    std::vector<bool> col_has_ditch(cols_, false);
+    for (int col = 0; col < cols_; ++col)
     {
+      auto &col_pts = cols[col];
       if (col_pts.size() < 2) continue;
 
       // 近→远: 垂直角升序（俯角从大到小）
@@ -177,12 +225,52 @@ private:
         const double ratio = gap_meas / gap_th;
         if (ratio > ratio_thresh_ && (gap_meas - gap_th) > min_width_)
         {
-          candidates.push_back({near_pt, static_cast<float>(ratio)});
+          col_has_ditch[col] = true;
+          candidates.push_back({near_pt, static_cast<float>(ratio), false});
         }
       }
     }
 
-    // 贪心聚类: 沟沿横向连续的点归为同一段沟
+    // 悬崖检测: 该列没有沟壑边缘时，若最远回波明显近于探测范围（下方无回波），
+    // 则最远点即为悬崖边缘。
+    if (cliff_enable_)
+    {
+      for (int col = 0; col < cols_; ++col)
+      {
+        if (col_has_ditch[col]) continue;
+
+        const auto &col_pts = cols[col];
+        if (static_cast<int>(col_pts.size()) < cliff_min_pts_) continue;
+
+        const pcl::PointXYZI &far_pt = col_pts.back();
+        const double d_far = horizontalDistance(far_pt);
+        if (d_far >= cliff_max_range_) continue;  // 已到探测边界，非悬崖
+
+        // 最远点若接近最浅束（max_vert），通常是墙面/陡上坡回波，排除
+        if (verticalAngle(far_pt) > max_vert_rad_ - cliff_vert_margin_rad_) continue;
+
+        // 最远点与次远点之间应存在正常线束间隔（排除墙面等同一距离点簇）
+        const double d_prev = horizontalDistance(col_pts[col_pts.size() - 2]);
+        if (d_far - d_prev < min_gap_) continue;
+
+        // 列内水平距离应大致随角度单调递增（地面特征）
+        bool monotonic = true;
+        for (size_t i = 1; i < col_pts.size(); ++i)
+        {
+          if (horizontalDistance(col_pts[i]) <
+              horizontalDistance(col_pts[i - 1]) - min_gap_)
+          {
+            monotonic = false;
+            break;
+          }
+        }
+        if (!monotonic) continue;
+
+        candidates.push_back({far_pt, -1.0f, true});
+      }
+    }
+
+    // 贪心聚类: 沟沿横向连续的点归为同一段沟/悬崖边界
     std::vector<std::vector<Candidate>> clusters;
     for (const auto &cand : candidates)
     {
@@ -205,137 +293,74 @@ private:
       else clusters.push_back({cand});
     }
 
-    // 发布沟点云 + 一条按水平角连线的 Marker 线（所有沟点合成一条折线）
-    pcl::PointCloud<pcl::PointXYZI> ditch_cloud;
+    // 过滤点数不足的小段，并按水平角升序（-60°→+60°）排列
     std::vector<Candidate> line_points;
     for (const auto &cluster : clusters)
     {
       if (static_cast<int>(cluster.size()) < min_pts_) continue;
       line_points.insert(line_points.end(), cluster.begin(), cluster.end());
     }
-
-    // 所有沟点按水平角升序（-60°→+60°）排列，连成一条折线
     std::sort(line_points.begin(), line_points.end(),
               [](const Candidate &a, const Candidate &b) {
                 return std::atan2(a.point.y, a.point.x) < std::atan2(b.point.y, b.point.x);
               });
 
-    visualization_msgs::msg::MarkerArray lines;
-    if (line_points.empty())
+    std::vector<Candidate> ditch_points, cliff_points;
+    for (const auto &cand : line_points)
     {
-      // 无沟时清除所有旧线，避免刷新残留
+      (cand.is_cliff ? cliff_points : ditch_points).push_back(cand);
+    }
+
+    // 发布点云: 沟壑 intensity 编码间距比，悬崖固定 255
+    pcl::PointCloud<pcl::PointXYZI> ditch_cloud;
+    for (const auto &cand : ditch_points)
+    {
+      pcl::PointXYZI pt = cand.point;
+      const float normalized = std::clamp((cand.ratio - 1.0f) / 4.0f, 0.0f, 1.0f);
+      pt.intensity = normalized * 255.0f;
+      ditch_cloud.push_back(pt);
+    }
+    pcl::PointCloud<pcl::PointXYZI> cliff_cloud;
+    for (const auto &cand : cliff_points)
+    {
+      pcl::PointXYZI pt = cand.point;
+      pt.intensity = 255.0f;
+      cliff_cloud.push_back(pt);
+    }
+
+    // Marker: 沟壑红色折线 + 黄色主方向轴; 悬崖橙色折线 + 紫色主方向轴
+    const rclcpp::Time stamp(msg->header.stamp);
+    visualization_msgs::msg::MarkerArray lines;
+    if (ditch_points.empty() && cliff_points.empty())
+    {
+      // 无沟/悬崖时清除所有旧线，避免刷新残留
       visualization_msgs::msg::Marker clear;
       clear.action = visualization_msgs::msg::Marker::DELETEALL;
       lines.markers.push_back(clear);
     }
     else
     {
-      visualization_msgs::msg::Marker line;
-      line.header.stamp = msg->header.stamp;
-      line.header.frame_id = frame_id_;
-      line.ns = "ditch";
-      line.id = 0;
-      line.type = visualization_msgs::msg::Marker::LINE_STRIP;
-      line.action = visualization_msgs::msg::Marker::ADD;
-      line.scale.x = 0.1;   // 线宽（米）
-      line.color.r = 1.0f;  // 红色
-      line.color.g = 0.0f;
-      line.color.b = 0.0f;
-      line.color.a = 1.0f;
-      line.lifetime = rclcpp::Duration::from_seconds(0.5);  // 自动过期，避免残留
-
-      for (const auto &cand : line_points)
+      if (!ditch_points.empty())
       {
-        pcl::PointXYZI pt = cand.point;
-        // intensity 编码归一化间距比: ratio ∈ [1,5] → [0,255]
-        const float normalized = std::clamp((cand.ratio - 1.0f) / 4.0f, 0.0f, 1.0f);
-        pt.intensity = normalized * 255.0f;
-        ditch_cloud.push_back(pt);
-
-        geometry_msgs::msg::Point p;
-        p.x = pt.x;
-        p.y = pt.y;
-        p.z = pt.z;
-        line.points.push_back(p);
+        lines.markers.push_back(lineMarker(ditch_points, "ditch", 0, 1.0f, 0.0f, 0.0f, 0.1f, stamp));
+        lines.markers.push_back(axisMarker(ditch_points, "ditch_axis", 1, 1.0f, 1.0f, 0.0f, stamp));
       }
-      lines.markers.push_back(line);
-
-      // ===== PCA 估计沟沿主方向（2D: x-y 平面）=====
-      const size_t n = line_points.size();
-      double mx = 0.0, my = 0.0, mz = 0.0;
-      for (const auto &cand : line_points)
+      else
       {
-        mx += cand.point.x;
-        my += cand.point.y;
-        mz += cand.point.z;
-      }
-      mx /= n; my /= n; mz /= n;
-
-      double cxx = 0.0, cyy = 0.0, cxy = 0.0;
-      for (const auto &cand : line_points)
-      {
-        const double dx = cand.point.x - mx;
-        const double dy = cand.point.y - my;
-        cxx += dx * dx;
-        cyy += dy * dy;
-        cxy += dx * dy;
+        lines.markers.push_back(deleteMarker("ditch", 0));
+        lines.markers.push_back(deleteMarker("ditch_axis", 1));
       }
 
-      // 2x2 协方差矩阵 [[cxx, cxy],[cxy, cyy]] 的最大特征值与对应特征向量（主方向）
-      const double tr = cxx + cyy;
-      const double det = cxx * cyy - cxy * cxy;
-      const double lambda_max = 0.5 * (tr + std::sqrt(tr * tr - 4.0 * det));
-
-      double ux = cxy;
-      double uy = lambda_max - cxx;
-      const double alt_norm = (lambda_max - cyy) * (lambda_max - cyy) + cxy * cxy;
-      if (ux * ux + uy * uy < alt_norm)
+      if (!cliff_points.empty())
       {
-        ux = lambda_max - cyy;
-        uy = cxy;
+        lines.markers.push_back(lineMarker(cliff_points, "cliff", 0, 1.0f, 0.5f, 0.0f, 0.12f, stamp));
+        lines.markers.push_back(axisMarker(cliff_points, "cliff_axis", 1, 1.0f, 0.0f, 1.0f, stamp));
       }
-      const double norm = std::hypot(ux, uy);
-      if (norm > 1e-9) { ux /= norm; uy /= norm; }
-      else { ux = 1.0; uy = 0.0; }
-
-      // 沿主方向的均方差作为线段半长
-      double var = 0.0;
-      for (const auto &cand : line_points)
+      else
       {
-        const double proj = (cand.point.x - mx) * ux + (cand.point.y - my) * uy;
-        var += proj * proj;
+        lines.markers.push_back(deleteMarker("cliff", 0));
+        lines.markers.push_back(deleteMarker("cliff_axis", 1));
       }
-      const double half_len = 1.5 * std::sqrt(var / n);  // 主方向线适当加长
-
-      // 发布主方向线段（黄色）
-      visualization_msgs::msg::Marker axis;
-      axis.header.stamp = msg->header.stamp;
-      axis.header.frame_id = frame_id_;
-      axis.ns = "ditch_axis";
-      axis.id = 1;
-      axis.type = visualization_msgs::msg::Marker::LINE_STRIP;
-      axis.action = visualization_msgs::msg::Marker::ADD;
-      axis.scale.x = 0.08;  // 线宽（米）
-      axis.color.r = 1.0f;  // 黄色
-      axis.color.g = 1.0f;
-      axis.color.b = 0.0f;
-      axis.color.a = 1.0f;
-      axis.lifetime = rclcpp::Duration::from_seconds(0.5);
-
-      geometry_msgs::msg::Point pa, pb;
-      pa.x = mx - half_len * ux;
-      pa.y = my - half_len * uy;
-      pa.z = mz;
-      pb.x = mx + half_len * ux;
-      pb.y = my + half_len * uy;
-      pb.z = mz;
-      axis.points.push_back(pa);
-      axis.points.push_back(pb);
-      lines.markers.push_back(axis);
-
-      RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 1000,
-                           "Ditch axis: angle=%.1f° (%zu pts)",
-                           std::atan2(uy, ux) * 180.0 / M_PI, n);
     }
 
     if (!ditch_cloud.empty())
@@ -347,20 +372,156 @@ private:
       pub_ditch_->publish(out);
     }
 
+    if (!cliff_cloud.empty())
+    {
+      sensor_msgs::msg::PointCloud2 out;
+      pcl::toROSMsg(cliff_cloud, out);
+      out.header.stamp = msg->header.stamp;
+      out.header.frame_id = frame_id_;
+      pub_cliff_->publish(out);
+    }
+
     pub_line_->publish(lines);
+  }
+
+  visualization_msgs::msg::Marker lineMarker(const std::vector<Candidate> &pts,
+                                             const std::string &ns, int id,
+                                             float r, float g, float b, float width,
+                                             const rclcpp::Time &stamp) const
+  {
+    visualization_msgs::msg::Marker m;
+    m.header.stamp = stamp;
+    m.header.frame_id = frame_id_;
+    m.ns = ns;
+    m.id = id;
+    m.type = visualization_msgs::msg::Marker::LINE_STRIP;
+    m.action = visualization_msgs::msg::Marker::ADD;
+    m.scale.x = width;
+    m.color.r = r;
+    m.color.g = g;
+    m.color.b = b;
+    m.color.a = 1.0f;
+    m.lifetime = rclcpp::Duration::from_seconds(0.5);  // 自动过期，避免残留
+    for (const auto &cand : pts)
+    {
+      geometry_msgs::msg::Point p;
+      p.x = cand.point.x;
+      p.y = cand.point.y;
+      p.z = cand.point.z;
+      m.points.push_back(p);
+    }
+    return m;
+  }
+
+  visualization_msgs::msg::Marker axisMarker(const std::vector<Candidate> &pts,
+                                             const std::string &ns, int id,
+                                             float r, float g, float b,
+                                             const rclcpp::Time &stamp)
+  {
+    // PCA 估计边界主方向（2D: x-y 平面）
+    const size_t n = pts.size();
+    double mx = 0.0, my = 0.0, mz = 0.0;
+    for (const auto &cand : pts)
+    {
+      mx += cand.point.x;
+      my += cand.point.y;
+      mz += cand.point.z;
+    }
+    mx /= n; my /= n; mz /= n;
+
+    double cxx = 0.0, cyy = 0.0, cxy = 0.0;
+    for (const auto &cand : pts)
+    {
+      const double dx = cand.point.x - mx;
+      const double dy = cand.point.y - my;
+      cxx += dx * dx;
+      cyy += dy * dy;
+      cxy += dx * dy;
+    }
+
+    // 2x2 协方差矩阵 [[cxx, cxy],[cxy, cyy]] 的最大特征值与对应特征向量（主方向）
+    const double tr = cxx + cyy;
+    const double det = cxx * cyy - cxy * cxy;
+    const double lambda_max = 0.5 * (tr + std::sqrt(std::max(0.0, tr * tr - 4.0 * det)));
+
+    double ux = cxy;
+    double uy = lambda_max - cxx;
+    const double alt_norm = (lambda_max - cyy) * (lambda_max - cyy) + cxy * cxy;
+    if (ux * ux + uy * uy < alt_norm)
+    {
+      ux = lambda_max - cyy;
+      uy = cxy;
+    }
+    const double norm = std::hypot(ux, uy);
+    if (norm > 1e-9) { ux /= norm; uy /= norm; }
+    else { ux = 1.0; uy = 0.0; }
+
+    // 沿主方向的均方差作为线段半长
+    double var = 0.0;
+    for (const auto &cand : pts)
+    {
+      const double proj = (cand.point.x - mx) * ux + (cand.point.y - my) * uy;
+      var += proj * proj;
+    }
+    const double half_len = 1.5 * std::sqrt(var / n);  // 主方向线适当加长
+
+    visualization_msgs::msg::Marker m;
+    m.header.stamp = stamp;
+    m.header.frame_id = frame_id_;
+    m.ns = ns;
+    m.id = id;
+    m.type = visualization_msgs::msg::Marker::LINE_STRIP;
+    m.action = visualization_msgs::msg::Marker::ADD;
+    m.scale.x = 0.08;  // 线宽（米）
+    m.color.r = r;
+    m.color.g = g;
+    m.color.b = b;
+    m.color.a = 1.0f;
+    m.lifetime = rclcpp::Duration::from_seconds(0.5);
+
+    geometry_msgs::msg::Point pa, pb;
+    pa.x = mx - half_len * ux;
+    pa.y = my - half_len * uy;
+    pa.z = mz;
+    pb.x = mx + half_len * ux;
+    pb.y = my + half_len * uy;
+    pb.z = mz;
+    m.points.push_back(pa);
+    m.points.push_back(pb);
+
+    RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 1000,
+                         "%s: angle=%.1f° (%zu pts)",
+                         ns.c_str(), std::atan2(uy, ux) * 180.0 / M_PI, n);
+    return m;
+  }
+
+  visualization_msgs::msg::Marker deleteMarker(const std::string &ns, int id) const
+  {
+    visualization_msgs::msg::Marker m;
+    m.action = visualization_msgs::msg::Marker::DELETE;
+    m.ns = ns;
+    m.id = id;
+    return m;
   }
 
   rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr sub_cloud_;
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pub_ditch_;
+  rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pub_cliff_;
+  rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pub_voxel_;
   rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr pub_line_;
 
   std::string input_topic_, ditch_topic_, line_topic_, frame_id_;
+  std::string cliff_topic_, voxel_topic_;
   double mount_height_;
   double horiz_fov_deg_, horiz_res_deg_;
   double min_vert_deg_, max_vert_deg_;
   double max_range_, min_range_;
   double ratio_thresh_, min_width_, min_gap_, cluster_dist_;
+  double voxel_leaf_size_;
+  double cliff_max_range_, cliff_vert_margin_deg_, cliff_vert_margin_rad_;
   int min_pts_;
+  int cliff_min_pts_;
+  bool cliff_enable_;
   int cols_;
   double horiz_min_rad_, horiz_res_rad_;
   double min_vert_rad_, max_vert_rad_;
