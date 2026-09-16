@@ -13,6 +13,16 @@
   <depend>geometry_msgs</depend>
   <depend>dth_messages</depend>
 
+  <!-- perception_bringup.launch.py 一键启动链路所需的运行期依赖。
+       注意：不能在此声明 pothole_detection / cluster —— 它们反向依赖本包，
+       声明会形成 colcon 拓扑循环（Unable to order packages topologically）。 -->
+  <exec_depend>ros2bag</exec_depend>
+  <exec_depend>ros2launch</exec_depend>
+  <exec_depend>rviz2</exec_depend>
+  <exec_depend>rslidar_sdk</exec_depend>
+  <exec_depend>lidar_leveling</exec_depend>
+  <exec_depend>ground_segmentation</exec_depend>
+
   <test_depend>ament_lint_auto</test_depend>
   <test_depend>ament_lint_common</test_depend>
 

@@ -62,12 +62,12 @@ def generate_launch_description():
         ),
         # 共用报警融合节点（订阅本节点的两路 ~/obstacle_warning_raw + 边坡两路原始告警，
         # 发布契约三话题）；节点名 warning_fusion 需与 perception_common 参数文件的段名一致
-        Node(
-            package='perception_common',
-            executable='warning_fusion_node',
-            name='warning_fusion',
-            output='screen',
-            parameters=[shared_file],
-            condition=IfCondition(start_warning_fusion),
-        ),
+        # Node(
+        #     package='perception_common',
+        #     executable='warning_fusion_node',
+        #     name='warning_fusion',
+        #     output='screen',
+        #     parameters=[shared_file],
+        #     condition=IfCondition(start_warning_fusion),
+        # ),
     ])
