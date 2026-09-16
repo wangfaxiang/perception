@@ -1,6 +1,11 @@
 /**
  * @file motion_state.hpp
- * @brief 车辆运动方向判定与「定向检测」门控（AutoDTH 契约 §3.1 / §6.2）
+ * @brief 车辆运动方向判定与「定向检测」门控（AutoDTH 契约 §3.1 / §6.2）——感知侧共用件
+ *
+ * 本头文件被两类检测节点共用（各自按 lidar_name 建一个实例）：
+ *   - pothole_detection（边坡/沟壑，输出 EdgeWarning 原始告警）
+ *   - cluster（障碍物聚类，输出 ObstacleWarning 原始告警）
+ * 定向策略与四态判定必须两侧完全一致，故实现只此一份。
  *
  * 订阅 gate 镜像话题（默认 /control/cmd_gate/cmd_vel，唯一发布者 autodth_cmd_gate，50Hz 恒发），
  * 按契约四态规则判定运动方向，并给出「本雷达当前是否参与检测」：
@@ -11,7 +16,7 @@
  *   停车     两轴均低于阈值（含镜像断流 > timeout，或模块单独调试）→ 前后均检测
  *
  * 门控语义：不参与检测的一侧整帧跳过点云处理（省算力），但照常发布安全告警
- * （999.0 / SAFE），使融合侧仍能判断该节点「在线但未检测」；方向切换后下一帧即恢复。
+ * （距离 999.0 / 无目标），使融合侧仍能判断该节点「在线但未检测」；方向切换后下一帧即恢复。
  */
 
 #pragma once
@@ -23,7 +28,7 @@
 #include <rclcpp/rclcpp.hpp>
 #include <geometry_msgs/msg/twist.hpp>
 
-namespace pothole_detection
+namespace perception_common
 {
 
 // 车辆运动方向四态（契约 §6.2）
@@ -172,4 +177,4 @@ private:
   bool seen_{false};
 };
 
-}  // namespace pothole_detection
+}  // namespace perception_common

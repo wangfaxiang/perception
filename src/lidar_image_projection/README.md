@@ -26,9 +26,9 @@ colcon build --cmake-args -DCMAKE_BUILD_TYPE=Debug --packages-select range_image
 ```
 -------------------------------------------------------------------------------------------
 
-# 前进：v=+0.3 m/s、ω=0，10 Hz 恒发
+# 前进：v=+0.3 m/s、ω=0，10 Hz 恒发(条件（建议默认阈值 v=0.05 m/s、ω=0.10 rad/s）)
 ros2 topic pub -r 10 /control/cmd_gate/cmd_vel geometry_msgs/msg/Twist \
-  '{linear: {x: 0.3}, angular: {z: 0.0}}'
+  '{linear: {x: -0.1}, angular: {z: 0.0}}'
 
 -------------------------------------------------------------------------------------------
 ## 步骤
@@ -67,12 +67,13 @@ ros2 launch ground_segmentation ransac_ground_filter.launch.py
 /rear/no_ground
 
 ## 启动点云聚类
-ros2 launch cluster cluster.launch.py
+ros2 launch cluster cluster.launch.py                          # 聚类 ×2 + 融合，一条命令
+ros2 launch cluster cluster.launch.py start_warning_fusion:=false   # 融合已在别处起过时
 输出话题：
 /front/box/cluster/euclidean/marker（MarkerArray类型）
 /rear/box/cluster/euclidean/marker（MarkerArray类型）
 
-
+ros2 launch perception_common warning_fusion.launch.py
 ## 聚类方法2
 ros2 launch range_image_segmentation range_image_segmentation.launch.py
 

@@ -24,9 +24,10 @@
  * 支持多雷达: 通过 lidar_name 参数（front/rear）区分前/后雷达，同一节点可启动多个实例。
  *
  * 定向检测（契约 §3.1/§6.2）: 按车辆运动方向门控——前进只测前方、后退只测后方、
- * 停车/原地旋转前后均检测（四态判定见 motion_state.hpp）。本实例只发布「单雷达原始告警」
- * 到节点私有话题（~/edge_warning_raw），由 edge_warning_fusion 取高等级合并为契约话题
- * /perception/edge_warning。
+ * 停车/原地旋转前后均检测（四态判定见 perception_common/motion_state.hpp，与 cluster 障碍物
+ * 检测共用同一份门控实现）。本实例只发布「单雷达原始告警」到节点私有话题
+ * （~/edge_warning_raw），由 perception_common 包的 warning_fusion 节点取高等级合并为
+ * 契约话题 /perception/edge_warning。
  */
 
 #include <rclcpp/rclcpp.hpp>
@@ -41,7 +42,7 @@
 #include <pcl/filters/filter.h>
 #include <pcl/filters/voxel_grid.h>
 
-#include "motion_state.hpp"
+#include <perception_common/motion_state.hpp>
 
 #include <algorithm>
 #include <chrono>
@@ -105,9 +106,11 @@ public:
     this->declare_parameter<std::string>("cliff_cloud_topic", prefix + "/cliff_cloud");
 
     // 边坡告警: 本实例只发布「单雷达原始告警」到节点私有话题（契约 §9 命名要求），
-    // 由 edge_warning_fusion 合并后发布契约话题 /perception/edge_warning
+    // 由 perception_common 包的共用融合节点 warning_fusion 合并后发布契约话题
+    // /perception/edge_warning 与 /perception/stop_command
     this->declare_parameter<std::string>("edge_warning_raw_topic", "~/edge_warning_raw");
-    // 边坡分档阈值：唯一真源 = config/params.yaml 的 /** 共享段（契约 §3.2 要求参数化）。
+    // 边坡分档阈值：唯一真源 = perception_common/config/params.yaml 的 /** 共享段
+    // （契约 §3.2 要求参数化）。
     // 声明为「无默认值」——未提供则启动即失败，避免代码默认值与参数文件分叉。
     this->declare_parameter("edge_danger_dist", rclcpp::ParameterType::PARAMETER_DOUBLE);
     this->declare_parameter("edge_caution_dist", rclcpp::ParameterType::PARAMETER_DOUBLE);
@@ -158,7 +161,7 @@ public:
     // 定向检测门控（契约 §3.1/§6.2）：订阅 gate 镜像自判运动方向，决定本雷达是否参与检测
     this->declare_parameter("motion_gate_enable", true);
     this->get_parameter("motion_gate_enable", motion_gate_enable_);
-    gate_ = std::make_unique<pothole_detection::MotionGate>(*this, lidar_name_);
+    gate_ = std::make_unique<perception_common::MotionGate>(*this, lidar_name_);
 
     cols_ = static_cast<int>(horiz_fov_deg_ / horiz_res_deg_);
     horiz_min_rad_ = -horiz_fov_deg_ / 2.0 * kDeg2Rad;
@@ -215,9 +218,9 @@ private:
     if (motion != last_motion_)
     {
       RCLCPP_INFO(this->get_logger(), "%s 运动方向 %s → %s（%s）",
-                  pothole_detection::toString(gate_->side()),
-                  pothole_detection::toString(last_motion_),
-                  pothole_detection::toString(motion),
+                  perception_common::toString(gate_->side()),
+                  perception_common::toString(last_motion_),
+                  perception_common::toString(motion),
                   detect ? "参与检测" : "门控跳过");
       last_motion_ = motion;
     }
@@ -226,8 +229,8 @@ private:
     {
       RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 2000,
                            "%s 门控跳过检测（运动方向 %s），发布安全默认值",
-                           pothole_detection::toString(gate_->side()),
-                           pothole_detection::toString(motion));
+                           perception_common::toString(gate_->side()),
+                           perception_common::toString(motion));
       publishSafeEdge();
       return;
     }
@@ -438,7 +441,7 @@ private:
 
       RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 2000,
                            "%s 检测到边坡: 最近距离=%.2f m, 平均距离=%.2f m (沟壑 %zu pts, 悬崖 %zu pts) → %s",
-                           pothole_detection::toString(gate_->side()),
+                           perception_common::toString(gate_->side()),
                            min_dist, mean_dist, ditch_points.size(), cliff_points.size(),
                            levelName(edge_msg.level));
     }
@@ -450,7 +453,7 @@ private:
 
       RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 2000,
                            "%s 没有检测到边坡 → SAFE",
-                           pothole_detection::toString(gate_->side()));
+                           perception_common::toString(gate_->side()));
     }
 
     // 立即发布本帧结果，并记录状态供心跳定时器补发（契约 §4.3 header.stamp = 节点时钟 now()）
@@ -579,7 +582,7 @@ private:
       {
         RCLCPP_WARN(this->get_logger(),
                     "%s 点云 %s 断流超过 %.2f s，原始边坡告警转安全默认值（999.0/SAFE）",
-                    pothole_detection::toString(gate_->side()),
+                    perception_common::toString(gate_->side()),
                     input_topic_.c_str(), edge_timeout_s_);
         stale_warned_ = true;
       }
@@ -596,7 +599,7 @@ private:
     {
       RCLCPP_INFO(this->get_logger(),
                   "%s 点云 %s 恢复，原始边坡告警恢复正常检测输出",
-                  pothole_detection::toString(gate_->side()), input_topic_.c_str());
+                  perception_common::toString(gate_->side()), input_topic_.c_str());
       stale_warned_ = false;
     }
 
@@ -745,10 +748,10 @@ private:
   std::string lidar_name_, input_topic_, ditch_topic_, line_topic_, frame_id_;
   std::string cliff_topic_, voxel_topic_, edge_topic_;
 
-  // 定向检测门控（契约 §3.1/§6.2）
-  std::unique_ptr<pothole_detection::MotionGate> gate_;
+  // 定向检测门控（契约 §3.1/§6.2）；实现为共用头 perception_common/motion_state.hpp
+  std::unique_ptr<perception_common::MotionGate> gate_;
   bool motion_gate_enable_{true};
-  pothole_detection::MotionState last_motion_{pothole_detection::MotionState::kStopped};
+  perception_common::MotionState last_motion_{perception_common::MotionState::kStopped};
 
   double mount_height_;
   double horiz_fov_deg_, horiz_res_deg_;

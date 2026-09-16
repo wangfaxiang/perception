@@ -1,0 +1,63 @@
+# 感知侧共用参数（perception_common）
+#
+# 本文件被【所有】感知节点加载（launch 里 parameters=[本文件, 各包自己的 params.yaml]）:
+#   - pothole_detection 前后检测实例（边坡）→ 吃 /** 段的边坡分档阈值
+#   - cluster 前后检测实例（障碍物）      → 吃 /** 段的障碍物上报距离
+#   - warning_fusion（本包融合节点）      → 吃 /** 段的两个急停阈值 + warning_fusion 段
+# 未声明的键对节点无影响（ROS 2 会忽略同名节点段以外的参数）。
+
+# ============ 全节点共享阈值（/** 通配任意节点名）============
+# 这些阈值是【唯一真源】：检测实例按它判定/上报，融合节点按它判定急停，
+# 代码里不保留默认值（未提供则该节点启动即失败），避免代码与参数文件分叉。
+/**:
+  ros__parameters:
+    # ---- 边坡（pothole_detection）----
+    edge_danger_dist: 4.0       # 最近边界距离 < 该值 → DANGER（并联动 /perception/stop_command）
+    edge_caution_dist: 10.0     # 最近边界距离 ≤ 该值 → CAUTION（仅告警，不联动急停）
+
+    # ---- 障碍物（cluster）----
+    obstacle_warn_dist: 15.0    # 最近障碍物距离 ≤ 该值才作为「威胁物」上报（超出视为未检出）
+    obstacle_danger_dist: 5.0   # 融合侧：威胁物距离 ≤ 该值 → 联动 /perception/stop_command
+
+# ============ 共用融合节点（契约三话题唯一发布者）============
+# 订阅两类检测实例的单雷达原始告警:
+#   边坡 /pothole_detection_{front,rear}/edge_warning_raw     (EdgeWarning)
+#   障碍 /cluster_{front,rear}/obstacle_warning_raw           (ObstacleWarning)
+# 周期发布（默认 10Hz，契约 §4.3 必须 ≥5Hz）:
+#   /perception/edge_warning     取等级更高的一路（同级取距离更近）
+#   /perception/obstacle_warning 类别优先（人员 > 车辆 > 其他），同级取最近
+#   /perception/stop_command     两类候选各自消抖后合并，reason 取数值最小者（优先级最高）
+warning_fusion:
+  ros__parameters:
+    # ---- 契约话题（§4.1 冻结：不得增删改名）----
+    edge_warning_topic: "/perception/edge_warning"
+    obstacle_warning_topic: "/perception/obstacle_warning"
+    stop_command_topic: "/perception/stop_command"
+
+    # ---- 原始告警来源（检测节点私有名空间，见各包 launch 的节点名）----
+    front_edge_topic: "/pothole_detection_front/edge_warning_raw"
+    rear_edge_topic: "/pothole_detection_rear/edge_warning_raw"
+    front_obstacle_topic: "/cluster_front/obstacle_warning_raw"
+    rear_obstacle_topic: "/cluster_rear/obstacle_warning_raw"
+
+    # 无目标帧的 frame_id（边坡为标量距离；无障碍物时坐标恒 0.0、距离 999.0）
+    # 有障碍物时保留胜出侧的雷达帧 frame_id（位置即该雷达系坐标）
+    frame_id: "base_link"
+
+    heartbeat_hz: 10.0         # 融合/发布频率（契约 §4.3 必须 ≥5Hz，建议 10Hz）
+    source_timeout_s: 0.5      # 单路原始告警断流超时（秒）→ 该路按安全默认值参与融合
+
+    # ---- 急停联动（契约 §3.3/§5.1/§7）----
+    # 边坡 DANGER 或 障碍物进入 obstacle_danger_dist，且连续 stop_debounce_frames 帧原始告警成立
+    # → stop=true；风险消失后下一周期立即发 stop=false（不消抖，§7.3 操作员复位的前置条件）。
+    # 锁存与解锁在系统侧 autodth_cmd_gate，本节点只维护 stop 电平（风险期间持续发布）。
+    # 两个阈值取本文件顶部 /** 共享段（与检测实例同源，代码无默认值）
+    stop_on_danger: true       # false = 只告警不联动急停（首轮联调/纯显示场景）
+    stop_debounce_frames: 2    # 连续 N 帧原始告警才置 stop（1 = 不消抖，收到即触发）
+
+    # 运动方向镜像：仅用于日志标注（前进/后退/原地旋转/停车/无信号）；
+    # 门控在检测实例内完成，融合本身与方向解耦，阈值须与检测实例保持一致
+    motion_cmd_topic: "/control/cmd_gate/cmd_vel"
+    motion_v_thresh: 0.05
+    motion_w_thresh: 0.05
+    motion_timeout_s: 0.5

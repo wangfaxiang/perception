@@ -8,9 +8,9 @@
             "program": "${workspaceFolder}/build/pothole_detection/pothole_detection_node",
             "args": [
                 "--ros-args",
-                // 阈值（edge_danger_dist/edge_caution_dist）无代码默认值，只能来自参数文件的 /** 共享段；
+                // 阈值（edge_danger_dist/edge_caution_dist 无代码默认值）只能来自参数文件的 /** 共享段；
                 // 本节点名被改为 debug_pothole_det_front，故文件里的节点专属段不会生效
-                "--params-file", "${workspaceFolder}/install/pothole_detection/share/pothole_detection/config/params.yaml",
+                "--params-file", "${workspaceFolder}/install/perception_common/share/perception_common/config/params.yaml",
                 "-r", "__node:=debug_pothole_det_front",
                 "-p", "lidar_name:=front",
                 "-p", "ditch_ratio_thresh:=9.0",
@@ -48,7 +48,7 @@
             "program": "${workspaceFolder}/build/pothole_detection/pothole_detection_node",
             "args": [
                 "--ros-args",
-                "--params-file", "${workspaceFolder}/install/pothole_detection/share/pothole_detection/config/params.yaml",
+                "--params-file", "${workspaceFolder}/install/perception_common/share/perception_common/config/params.yaml",
                 "-r", "__node:=debug_pothole_det_rear",
                 "-p", "lidar_name:=rear",
                 "-p", "ditch_ratio_thresh:=9.0",
@@ -79,29 +79,36 @@
             "preLaunchTask": ""
         },
         {
-            "name": "Debug edge_warning_fusion (launch)",
+            "name": "Debug warning_fusion (launch)",
             "type": "cppdbg",
             "request": "launch",
-            "program": "${workspaceFolder}/build/pothole_detection/edge_warning_fusion_node",
+            "program": "${workspaceFolder}/build/perception_common/warning_fusion_node",
             "args": [
                 "--ros-args",
-                "--params-file", "${workspaceFolder}/install/pothole_detection/share/pothole_detection/config/params.yaml",
-                "-r", "__node:=debug_edge_warning_fusion",
-                // 调试态默认只接调试实例（不碰契约话题 /perception/edge_warning）：
-                // 与 “Debug pothole 前后雷达 + 融合” 组合调试时直接可用；
+                // 共享阈值（edge_danger_dist / obstacle_danger_dist 无代码默认值）只能来自
+                // perception_common 的 /** 共享段；节点被 __node:= 改名，故文件里的
+                // warning_fusion 专属段不生效（避免调试期真去锁停整车、发生产话题）
+                "--params-file", "${workspaceFolder}/install/perception_common/share/perception_common/config/params.yaml",
+                "-r", "__node:=debug_warning_fusion",
+                // 调试态默认只接调试实例（不碰契约话题 /perception/*）：
+                // 与 “Debug pothole 前后雷达 + 融合” / “Debug cluster 前后雷达” 组合调试时直接可用；
                 // 接真实检测实例（生产命名）时改为:
                 //   /pothole_detection_front/edge_warning_raw, /pothole_detection_rear/edge_warning_raw
-                "-p", "front_source_topic:=/debug_pothole_det_front/edge_warning_raw",
-                "-p", "rear_source_topic:=/debug_pothole_det_rear/edge_warning_raw",
+                //   /cluster_front/obstacle_warning_raw,        /cluster_rear/obstacle_warning_raw
+                "-p", "front_edge_topic:=/debug_pothole_det_front/edge_warning_raw",
+                "-p", "rear_edge_topic:=/debug_pothole_det_rear/edge_warning_raw",
+                "-p", "front_obstacle_topic:=/debug_cluster_front/obstacle_warning_raw",
+                "-p", "rear_obstacle_topic:=/debug_cluster_rear/obstacle_warning_raw",
                 "-p", "edge_warning_topic:=/debug/edge_warning",
-                // 急停也发到调试话题：调试期 DANGER 不得真的去锁停整车（生产名 /perception/stop_command）
+                "-p", "obstacle_warning_topic:=/debug/obstacle_warning",
+                // 急停也发到调试话题：调试期触发不得真的去锁停整车（生产名 /perception/stop_command）
                 "-p", "stop_command_topic:=/debug/stop_command"
             ],
             "cwd": "${workspaceFolder}",
             "environment": [
                 {
                     "name": "LD_LIBRARY_PATH",
-                    "value": "${workspaceFolder}/install/pothole_detection/lib:${workspaceFolder}/install/dth_messages/lib:${env:LD_LIBRARY_PATH}"
+                    "value": "${workspaceFolder}/install/perception_common/lib:${workspaceFolder}/install/dth_messages/lib:${env:LD_LIBRARY_PATH}"
                 }
             ],
             "MIMode": "gdb",
@@ -377,18 +384,28 @@
             "program": "${workspaceFolder}/build/cluster/cluster",
             "args": [
                 "--ros-args",
+                // 共享阈值（obstacle_warn_dist 无代码默认值）只能来自 perception_common 的 /** 共享段；
+                // 本节点名被改为 debug_cluster_front，故 cluster/config/params.yaml 的节点专属段不会生效
+                "--params-file", "${workspaceFolder}/install/perception_common/share/perception_common/config/params.yaml",
                 "-r", "__node:=debug_cluster_front",
                 "-p", "lidar_name:=front",
                 "-p", "cluster_tolerance:=0.20",
                 "-p", "min_cluster_size:=15",
                 "-p", "max_cluster_size:=100000",
-                "-p", "region_rowing:=false"
+                "-p", "region_rowing:=false",
+                // 障碍物告警（原始话题为 ~/obstacle_warning_raw = 本调试名下的私有话题）
+                "-p", "obstacle_type:=3",
+                // 定向检测门控：镜像话题不通/未收到时按停车处理（双向检测）；
+                // 想单独调试聚类算法可关掉门控
+                // "-p", "motion_gate_enable:=false",
+                // "-p", "motion_cmd_topic:=/nonexistent",
+                "-p", "obstacle_warning_raw_topic:=/debug_cluster_front/obstacle_warning_raw"
             ],
             "cwd": "${workspaceFolder}",
             "environment": [
                 {
                     "name": "LD_LIBRARY_PATH",
-                    "value": "${workspaceFolder}/install/cluster/lib:${workspaceFolder}/install/box_msg/lib:${env:LD_LIBRARY_PATH}"
+                    "value": "${workspaceFolder}/install/cluster/lib:${workspaceFolder}/install/box_msg/lib:${workspaceFolder}/install/dth_messages/lib:${env:LD_LIBRARY_PATH}"
                 }
             ],
             "MIMode": "gdb",
@@ -409,18 +426,22 @@
             "program": "${workspaceFolder}/build/cluster/cluster",
             "args": [
                 "--ros-args",
+                // 同 cluster_front 配置说明
+                "--params-file", "${workspaceFolder}/install/perception_common/share/perception_common/config/params.yaml",
                 "-r", "__node:=debug_cluster_rear",
                 "-p", "lidar_name:=rear",
                 "-p", "cluster_tolerance:=0.20",
                 "-p", "min_cluster_size:=15",
                 "-p", "max_cluster_size:=100000",
-                "-p", "region_rowing:=false"
+                "-p", "region_rowing:=false",
+                "-p", "obstacle_type:=3",
+                "-p", "obstacle_warning_raw_topic:=/debug_cluster_rear/obstacle_warning_raw"
             ],
             "cwd": "${workspaceFolder}",
             "environment": [
                 {
                     "name": "LD_LIBRARY_PATH",
-                    "value": "${workspaceFolder}/install/cluster/lib:${workspaceFolder}/install/box_msg/lib:${env:LD_LIBRARY_PATH}"
+                    "value": "${workspaceFolder}/install/cluster/lib:${workspaceFolder}/install/box_msg/lib:${workspaceFolder}/install/dth_messages/lib:${env:LD_LIBRARY_PATH}"
                 }
             ],
             "MIMode": "gdb",
@@ -559,7 +580,7 @@
             ],
             "stopAtEntry": false,
             "preLaunchTask": ""
-        },
+        }
     ],
     "compounds": [
         {
@@ -571,11 +592,31 @@
             "stopAll": true
         },
         {
+            "name": "Debug 感知告警全链路 (pothole×2 + cluster×2 + fusion)",
+            "configurations": [
+                "Debug pothole_detection_front (launch)",
+                "Debug pothole_detection_rear (launch)",
+                "Debug cluster_front (launch)",
+                "Debug cluster_rear (launch)",
+                "Debug warning_fusion (launch)"
+            ],
+            "stopAll": true
+        },
+        {
             "name": "Debug pothole 前后雷达 + 融合 (front + rear + fusion)",
             "configurations": [
                 "Debug pothole_detection_front (launch)",
                 "Debug pothole_detection_rear (launch)",
-                "Debug edge_warning_fusion (launch)"
+                "Debug warning_fusion (launch)"
+            ],
+            "stopAll": true
+        },
+        {
+            "name": "Debug cluster 前后雷达 + 融合 (front + rear + fusion)",
+            "configurations": [
+                "Debug cluster_front (launch)",
+                "Debug cluster_rear (launch)",
+                "Debug warning_fusion (launch)"
             ],
             "stopAll": true
         },

@@ -1,23 +1,17 @@
 <?xml version="1.0"?>
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
-  <name>pothole_detection</name>
+  <name>perception_common</name>
   <version>0.1.0</version>
-  <description>Detect ground ditches (negative obstacles) via adjacent laser-beam footprint spacing ratio</description>
+  <description>感知侧共用件：运动方向定向检测门控（头文件）+ 契约告警融合节点（/perception/* 三话题唯一发布者）</description>
   <maintainer email="user@example.com">user</maintainer>
   <license>BSD</license>
 
   <buildtool_depend>ament_cmake</buildtool_depend>
 
   <depend>rclcpp</depend>
-  <depend>sensor_msgs</depend>
-  <depend>visualization_msgs</depend>
   <depend>geometry_msgs</depend>
-  <depend>pcl_conversions</depend>
   <depend>dth_messages</depend>
-  <!-- 共用件：运动方向门控头（perception_common/motion_state.hpp）；
-       契约话题发布在 perception_common 的 warning_fusion 节点（运行期也需要） -->
-  <depend>perception_common</depend>
 
   <test_depend>ament_lint_auto</test_depend>
   <test_depend>ament_lint_common</test_depend>

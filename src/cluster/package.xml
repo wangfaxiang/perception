@@ -11,6 +11,12 @@
   <depend>std_msgs</depend>
   <depend>visualization_msgs</depend>
   <depend>box_msg</depend>
+  <!-- 契约消息（障碍物原始告警） -->
+  <depend>dth_messages</depend>
+  <!-- 运动门控镜像 Twist 订阅（共用头 perception_common/motion_state.hpp 需要） -->
+  <depend>geometry_msgs</depend>
+  <!-- 共用件：运动方向门控；契约话题发布在 perception_common 的 warning_fusion 节点 -->
+  <depend>perception_common</depend>
   <buildtool_depend>ament_cmake</buildtool_depend>
 
   <test_depend>ament_lint_auto</test_depend>

@@ -14,6 +14,10 @@ find_package(visualization_msgs REQUIRED)
 find_package(PCL REQUIRED REQUIRED)
 find_package(pcl_conversions REQUIRED)
 find_package(box_msg REQUIRED)
+find_package(dth_messages REQUIRED)
+find_package(geometry_msgs REQUIRED)
+# 共用件：运动方向门控头（<perception_common/motion_state.hpp>）
+find_package(perception_common REQUIRED)
 # uncomment the following section in order to fill in
 # further dependencies manually.
 # find_package(<dependency> REQUIRED)
@@ -29,13 +33,13 @@ add_executable(${PROJECT_NAME} src/node.cpp)
 target_link_libraries(${PROJECT_NAME}
     ${PCL_LIBRARIES}
 )
-ament_target_dependencies(${PROJECT_NAME} rclcpp sensor_msgs std_msgs visualization_msgs box_msg) 
+ament_target_dependencies(${PROJECT_NAME} rclcpp sensor_msgs std_msgs visualization_msgs box_msg geometry_msgs dth_messages perception_common) 
 
 install(TARGETS
   ${PROJECT_NAME}
   DESTINATION lib/${PROJECT_NAME})
 
-install(DIRECTORY launch
+install(DIRECTORY launch config
   DESTINATION share/${PROJECT_NAME})
 
 if(BUILD_TESTING)

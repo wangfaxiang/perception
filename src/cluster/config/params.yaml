@@ -1,0 +1,82 @@
+# 障碍物聚类（cluster）检测实例参数 —— 前/后雷达各一段（节点名 = launch 里的 cluster_front / cluster_rear）
+#
+# 输入：ransac 地面过滤输出的非地面点云（/front/no_ground、/rear/no_ground）
+# 输出：
+#   /<lidar>/box/cluster/{euclidean,region_rowing}         调试用包围盒（box_msg）
+#   /<lidar>/box/cluster/.../marker                        RViz 包围盒
+#   ~/obstacle_warning_raw（= /cluster_front|rear/obstacle_warning_raw）
+#       契约 §3.1/§5.3 的「单雷达原始障碍物告警」（dth_messages/ObstacleWarning），
+#       由 perception_common 包的 warning_fusion 合并后发布 /perception/obstacle_warning
+#       与 /perception/stop_command（与边坡告警共用同一个融合节点）。
+#
+# 共享阈值 obstacle_warn_dist 与急停阈值 obstacle_danger_dist 的【唯一真源】是
+# perception_common/config/params.yaml 的 /** 共享段 —— launch 会同时加载两个文件：
+#   parameters=[perception_common 的 params.yaml, 本文件]
+#
+# 定向检测（契约 §3.1/§6.2，与边坡检测共用 perception_common/motion_state.hpp）：
+#   前进(linear.x ≥ +v)只测前、后退(≤ −v)只测后、|v|<v 且 |angular.z|≥ω → 原地旋转 /
+#   两轴均低 → 停车（后两者前后均检测）。
+#   不参与检测的一侧整帧跳过聚类，但仍按帧发布安全默认告警，维持原始告警心跳。
+
+# ============ 前雷达 ============
+cluster_front:
+  ros__parameters:
+    lidar_name: "front"
+    input_topic: "/front/no_ground"
+    euclidean_topic: "/front/box/cluster/euclidean"
+    region_rowing_topic: "/front/box/cluster/region_rowing"
+    euclidean_marker_topic: "/front/box/cluster/euclidean/marker"
+    region_rowing_marker_topic: "/front/box/cluster/region_rowing/marker"
+
+    cluster_tolerance: 0.20     # 欧氏聚类容差（米）
+    min_cluster_size: 15        # 最小簇点数
+    max_cluster_size: 100000    # 最大簇点数
+    region_rowing: false        # 是否同时跑区域生长聚类（调试用）
+
+    # ---- 障碍物告警（本实例的原始告警，由 warning_fusion 合并发布契约话题）----
+    # 上报距离阈值 obstacle_warn_dist 见 perception_common/config/params.yaml 的 /** 共享段
+    obstacle_warning_raw_topic: "/cluster_front/obstacle_warning_raw"
+    frame_id: "front_rslidar"   # 位置字段的坐标系（未收到点云时的占位帧；有点云时用输入点云 frame）
+    obstacle_source: "euclidean"  # 哪一路聚类结果作为告警来源: euclidean / region_rowing
+    # 类别：cluster 只做几何聚类、无类别识别能力 → 3=其他；联调可强制 1=人员 / 2=车辆
+    # （契约 §5.3: detected=true 时禁止 type=0）
+    obstacle_type: 3
+    obstacle_heartbeat_hz: 10.0   # 心跳频率（契约 §4.3 必须 ≥5Hz，建议 10Hz）
+    obstacle_timeout_s: 0.5       # 点云断流超过该时长 → 输出安全默认值（§3.3）
+
+    # ---- 定向检测门控（契约 §3.1/§6.2）----
+    motion_gate_enable: true
+    motion_cmd_topic: "/control/cmd_gate/cmd_vel"
+    motion_v_thresh: 0.05      # 纵向速度阈值（m/s）：|v| < 该值视为无前进/后退意图
+    motion_w_thresh: 0.05      # 角速度阈值（rad/s）：|v| 低且 |ω| ≥ 该值 → 原地旋转
+    motion_timeout_s: 0.5      # 镜像断流超时（秒）→ 按停车处理（双向检测）
+
+# ============ 后雷达 ============
+cluster_rear:
+  ros__parameters:
+    lidar_name: "rear"
+    input_topic: "/rear/no_ground"
+    euclidean_topic: "/rear/box/cluster/euclidean"
+    region_rowing_topic: "/rear/box/cluster/region_rowing"
+    euclidean_marker_topic: "/rear/box/cluster/euclidean/marker"
+    region_rowing_marker_topic: "/rear/box/cluster/region_rowing/marker"
+
+    cluster_tolerance: 0.20
+    min_cluster_size: 15
+    max_cluster_size: 100000
+    region_rowing: false
+
+    # ---- 障碍物告警（同 front 段语义）----
+    obstacle_warning_raw_topic: "/cluster_rear/obstacle_warning_raw"
+    frame_id: "rear_rslidar"
+    obstacle_source: "euclidean"
+    obstacle_type: 3
+    obstacle_heartbeat_hz: 10.0
+    obstacle_timeout_s: 0.5
+
+    # ---- 定向检测门控（契约 §3.1/§6.2），与 front 段同义 ----
+    motion_gate_enable: true
+    motion_cmd_topic: "/control/cmd_gate/cmd_vel"
+    motion_v_thresh: 0.05
+    motion_w_thresh: 0.05
+    motion_timeout_s: 0.5
