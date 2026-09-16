@@ -37,12 +37,39 @@ ratio = Δx_meas / Δx_th > ditch_ratio_thresh  且  Δx_meas − Δx_th > ditch
 ```text
 pothole_detection_front ─► /pothole_detection_front/edge_warning_raw ┐
                                                                      ├─► edge_warning_fusion ─► /perception/edge_warning
-pothole_detection_rear  ─► /pothole_detection_rear/edge_warning_raw  ┘
+pothole_detection_rear  ─► /pothole_detection_rear/edge_warning_raw  ┘                        └─► /perception/stop_command
 ```
 
 `edge_warning_fusion` 每周期取等级更高的一路发布（同级取距离更近者），默认 10 Hz：
 前进时后侧原始告警恒为 SAFE，取高等级自然只体现前侧结果；停车/原地旋转时两侧都在检测，
 取高等级即「综合前后雷达警告级别」。某侧断流超时按 `999.0` / `SAFE` 参与融合。
+
+## 急停联动（契约 §5.1 / §5.2 / §7）
+
+同一个融合周期内，若等级达 `LEVEL_DANGER`，`edge_warning_fusion` 同步发布
+`/perception/stop_command`（`stop=true`、`reason=REASON_EDGE_DANGER`、
+`confidence` 由距离线性换算、`description` 为中文简述如 `前方 4.0m 边坡`）。
+
+| 融合等级 | edge_warning | stop_command |
+| --- | --- | --- |
+| SAFE | `warning=false` | `stop=false`, `reason=0`, `confidence=0.0` |
+| CAUTION | `warning=true` | `stop=false`（仅告警显示，不联动） |
+| DANGER | `warning=true` | `stop=true`, `reason=4 (EDGE_DANGER)` |
+
+行为要点：
+
+- **置位消抖**：连续 `stop_debounce_frames` 帧**原始告警**（不是融合采样周期——本节点会复用
+  最近一帧最长 `source_timeout_s`，按采样计数会让单帧毛刺失效）均为 DANGER 才置 `stop=true`。
+  默认 `2`（10 Hz 下自首个 DANGER 帧起额外延迟 1~2 个周期 ≈ 100~200 ms，处于契约 §3.3 的
+  ~200 ms 上限）；置 `1` 即不消抖、收到即触发（若联调按 §8 V2 严格要求「风险注入后
+  ≤1 个发布周期」，可用 `1`）。
+- **回退不消抖**：等级低于 DANGER 后下一周期立即发 `stop=false`——这是系统侧
+  操作员复位（`/mission/reset`）的前置条件（§7.3）。
+- **锁存不在感知侧**：`autodth_cmd_gate` 锁存 `stop` 电平，`stop=false` 不解锁；
+  本节点只负责在风险持续期间持续发布 `stop=true`（§4.3 心跳义务）。
+- `stop_on_danger: false` 可整体关闭联动（只发 `stop=false` 心跳），用于首轮联调。
+- reason 枚举目前只用 `REASON_EDGE_DANGER`；后续障碍物急停（PERSON/VEHICLE/OTHER）
+  应在同一节点聚合，按 §3.1 的类别优先顺序选取最高优先级来源。
 
 ## 编译
 
@@ -57,9 +84,10 @@ colcon build --packages-select pothole_detection
 source install/setup.bash
 ros2 launch pothole_detection pothole_detection.launch.py
 
-# 或直接运行单个节点
+# 或直接运行单个节点（必须带参数文件：边坡分档阈值等无代码默认值）
 ros2 run pothole_detection pothole_detection_node \
-  --ros-args -p lidar_name:=front -p mount_height:=1.2
+  --ros-args --params-file install/pothole_detection/share/pothole_detection/config/params.yaml \
+  -p lidar_name:=front -p mount_height:=1.2
 ```
 
 ## 依赖
@@ -69,6 +97,11 @@ ros2 run pothole_detection pothole_detection_node \
 - pcl_conversions
 
 ## 参数
+
+> 边坡分档阈值 `edge_danger_dist` / `edge_caution_dist` 定义在 `config/params.yaml` 顶部的
+> `/**` 共享段（同一文件被三个节点加载，`/**` 通配任意节点名）——检测实例与融合节点同源，
+> 代码里没有默认值，未提供则节点启动即失败。
+> 注意（Galactic 实测）：**参数文件里的键优先于命令行 `-p`**，要改值请改文件（或另写参数文件）。
 
 | 参数 | 默认值 | 说明 |
 | --- | --- | --- |
@@ -88,7 +121,7 @@ ros2 run pothole_detection pothole_detection_node \
 | `cliff_min_points` | 3 | 列内最少点数才判悬崖 |
 | `cliff_vert_margin_deg` | 1.0 | 最远点距 `max_vert_angle` 的最小角裕量（度） |
 | `edge_warning_raw_topic` | `~/edge_warning_raw` | 本实例原始边坡告警话题（由融合节点消费） |
-| `edge_danger_dist` / `edge_caution_dist` | 5.0 / 10.0 | 最近距离分档阈值（米）→ DANGER / CAUTION |
+| `edge_danger_dist` / `edge_caution_dist` | **4.0 / 10.0** | 最近距离分档阈值（米）→ DANGER / CAUTION。**唯一真源在 `config/params.yaml` 顶部的 `/**` 共享段**（检测实例与融合节点同源），代码无默认值 |
 | `edge_heartbeat_hz` / `edge_timeout_s` | 10.0 / 0.5 | 告警心跳频率（契约 ≥5Hz）/ 点云断流判定超时（秒） |
 | `motion_gate_enable` | true | 是否启用运动方向定向检测门控 |
 | `motion_cmd_topic` | `/control/cmd_gate/cmd_vel` | gate 镜像话题（只订阅，不发布 cmd_vel） |
@@ -98,6 +131,9 @@ ros2 run pothole_detection pothole_detection_node \
 融合节点 `edge_warning_fusion` 参数：`edge_warning_topic`（`/perception/edge_warning`）、
 `front_source_topic` / `rear_source_topic`（两侧原始告警）、`frame_id`（`base_link`）、
 `edge_heartbeat_hz`（10.0）、`source_timeout_s`（0.5）；
+急停联动：`stop_command_topic`（`/perception/stop_command`）、`stop_on_danger`（true）、
+`stop_debounce_frames`（2）；confidence 换算用的 `edge_danger_dist` 与检测实例同源，
+取自 `config/params.yaml` 顶部 `/**` 共享段（代码无默认值）；
 另有 `motion_cmd_topic` / `motion_v_thresh` / `motion_w_thresh` / `motion_timeout_s`，
 仅用于在日志里标注当前运动方向（融合本身与方向解耦，阈值应与检测实例保持一致）。
 
@@ -109,12 +145,19 @@ ros2 topic echo /pothole_detection_front/edge_warning_raw
 ros2 topic echo /pothole_detection_rear/edge_warning_raw
 # 看融合输出（等级更高的一路，日志含取哪一侧）
 ros2 topic echo /perception/edge_warning
-# 融合日志每秒一条，带当前运动方向与两侧原始告警（便于定位“为何取前/取后”）
-# 融合: 运动=前进 前[DANGER 4.0m] 后[SAFE 999.0m] → DANGER 4.0m (取前)
+# 看急停联动（DANGER 时应为 stop=true / reason=4；风险消失后应回 stop=false / reason=0）
+ros2 topic echo /perception/stop_command
+ros2 topic hz /perception/stop_command
+# 融合日志每秒一条，带当前运动方向、两侧原始告警与急停状态（便于定位“为何取前/为何急停”）
+# 融合: 运动=前进 前[DANGER 4.0m] 后[SAFE 999.0m] → DANGER 4.0m (取前)，急停=ON
+# 急停状态翻转时另有独立日志：急停触发(WARN) / 急停解除(INFO)
 # 方向取值：前进 / 后退 / 原地旋转 / 停车 / 无信号（未收到或断流镜像，按停车处理）
 # 手动注入运动方向（前进 / 后退 / 原地旋转 / 停车）
 ros2 topic pub -r 10 /control/cmd_gate/cmd_vel geometry_msgs/msg/Twist \
   '{linear: {x: 0.3}, angular: {z: 0.0}}'
+# 离线验证急停联动（无需雷达）：向两侧原始告警话题灌 DANGER 帧
+ros2 topic pub -r 10 /pothole_detection_front/edge_warning_raw dth_messages/msg/EdgeWarning \
+  '{warning: true, dist_to_edge_m: 4.0, level: 2}'
 ```
 
 

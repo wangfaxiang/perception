@@ -1,5 +1,14 @@
 # 沟壑（负障碍物）检测参数 —— 速腾聚创 E1R 固态雷达（120°×90°，1200×144）
 #
+
+# ============ 全节点共享参数（同一文件被三个节点加载；/** 通配任意节点名） ============
+# 边坡分档阈值的【唯一真源】：检测实例用它分档，融合节点用它换算 stop_command 的 confidence。
+# 代码里不再保留默认值（未提供则该节点启动即失败），避免代码与参数文件分叉。
+/**:
+  ros__parameters:
+    edge_danger_dist: 4.0      # 最近距离 < 该值 → DANGER（并联动 /perception/stop_command）
+    edge_caution_dist: 10.0    # 最近距离 ≤ 该值 → CAUTION（仅告警，不联动急停）
+
 # 原理: 相邻线束地面落点水平间距比检测沟壑（沟底被近沿遮挡、雷达扫不到）。
 #   Δx_th = h·(cot β_far − cot β_near)，ratio = Δx_meas / Δx_th > 阈值 → 沟。
 #
@@ -50,10 +59,8 @@ pothole_detection_front:
     cliff_vert_margin_deg: 1.0 # 最远点距 max_vert_angle 的最小角裕量（度）
 
     # ---- 边坡告警（本实例的原始告警，由 edge_warning_fusion 合并后发布契约话题）----
-    # 分级：最近距离 < 5m → DANGER；5~10m → CAUTION；> 10m 或无边坡 → SAFE
+    # 分档阈值 edge_danger_dist / edge_caution_dist 见文件顶部 /** 共享段（唯一真源）
     edge_warning_raw_topic: "/pothole_detection_front/edge_warning_raw"
-    edge_danger_dist: 5.0      # 最近距离 < 5m → DANGER
-    edge_caution_dist: 10.0    # 最近距离 < 10m → CAUTION，否则 SAFE
     edge_heartbeat_hz: 10.0    # 心跳频率（契约 §4.3 必须 ≥5Hz，建议 10Hz）
     edge_timeout_s: 0.5        # 点云断流超过该时长 → 输出安全默认值（§3.3）
 
@@ -104,10 +111,8 @@ pothole_detection_rear:
     cliff_vert_margin_deg: 1.0 # 最远点距 max_vert_angle 的最小角裕量（度）
 
     # ---- 边坡告警（本实例的原始告警，由 edge_warning_fusion 合并后发布契约话题）----
-    # 分级：最近距离 < 5m → DANGER；5~10m → CAUTION；> 10m 或无边坡 → SAFE
+    # 分档阈值 edge_danger_dist / edge_caution_dist 见文件顶部 /** 共享段（唯一真源）
     edge_warning_raw_topic: "/pothole_detection_rear/edge_warning_raw"
-    edge_danger_dist: 5.0      # 最近距离 < 5m → DANGER
-    edge_caution_dist: 10.0    # 最近距离 < 10m → CAUTION，否则 SAFE
     edge_heartbeat_hz: 10.0    # 心跳频率（契约 §4.3 必须 ≥5Hz，建议 10Hz）
     edge_timeout_s: 0.5        # 点云断流超过该时长 → 输出安全默认值（§3.3）
 
@@ -121,6 +126,7 @@ pothole_detection_rear:
 # ============ 边坡告警融合（/perception/edge_warning 唯一发布者） ============
 # 订阅前后两路原始告警，周期性发布等级更高的一路（同级取距离更近）。
 # 契约 §4.1/§4.2/§4.3：话题名/类型冻结、默认 QoS、≥5Hz 心跳（含无风险安全态）。
+# 同时承担急停联动（契约 §5.2/§7）：融合等级达 DANGER → 同周期发布 /perception/stop_command。
 edge_warning_fusion:
   ros__parameters:
     edge_warning_topic: "/perception/edge_warning"
@@ -129,6 +135,17 @@ edge_warning_fusion:
     frame_id: "base_link"      # 车体系（距离为标量，无需坐标变换）
     edge_heartbeat_hz: 10.0    # 融合/发布频率（契约 §4.3 必须 ≥5Hz，建议 10Hz）
     source_timeout_s: 0.5      # 单侧原始告警断流超时（秒）→ 该侧按 999.0/SAFE 参与融合
+
+    # ---- 急停联动（契约 §3.3/§5.1/§5.2/§7）----
+    # 融合等级 == LEVEL_DANGER 且连续 stop_debounce_frames 个周期成立 → stop=true,
+    # reason=REASON_EDGE_DANGER；等级回退后下一周期即发 stop=false（立即恢复，不消抖）。
+    # 锁存与解锁在系统侧 autodth_cmd_gate，本节点只维护 stop 电平（风险期间持续发布）。
+    # reason 目前只有边坡一类；后续障碍物急停（PERSON/VEHICLE/OTHER）应在此节点聚合，
+    # 按 §3.1 类别优先顺序取最高优先级来源。
+    # confidence 换算用的 DANGER 阈值取文件顶部 /** 共享段（与检测实例同源）
+    stop_command_topic: "/perception/stop_command"
+    stop_on_danger: true       # false = 只告警不联动急停（首轮联调/纯显示场景）
+    stop_debounce_frames: 2    # 连续 N 帧原始告警 DANGER 才置 stop（1 = 不消抖，收到即触发）
 
     # 运动方向镜像：仅用于日志标注（前进/后退/原地旋转/停车/无信号），
     # 门控在检测实例内完成，融合本身与方向解耦；阈值须与检测实例保持一致

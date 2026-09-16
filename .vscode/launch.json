@@ -8,6 +8,9 @@
             "program": "${workspaceFolder}/build/pothole_detection/pothole_detection_node",
             "args": [
                 "--ros-args",
+                // 阈值（edge_danger_dist/edge_caution_dist）无代码默认值，只能来自参数文件的 /** 共享段；
+                // 本节点名被改为 debug_pothole_det_front，故文件里的节点专属段不会生效
+                "--params-file", "${workspaceFolder}/install/pothole_detection/share/pothole_detection/config/params.yaml",
                 "-r", "__node:=debug_pothole_det_front",
                 "-p", "lidar_name:=front",
                 "-p", "ditch_ratio_thresh:=9.0",
@@ -45,6 +48,7 @@
             "program": "${workspaceFolder}/build/pothole_detection/pothole_detection_node",
             "args": [
                 "--ros-args",
+                "--params-file", "${workspaceFolder}/install/pothole_detection/share/pothole_detection/config/params.yaml",
                 "-r", "__node:=debug_pothole_det_rear",
                 "-p", "lidar_name:=rear",
                 "-p", "ditch_ratio_thresh:=9.0",
@@ -81,6 +85,7 @@
             "program": "${workspaceFolder}/build/pothole_detection/edge_warning_fusion_node",
             "args": [
                 "--ros-args",
+                "--params-file", "${workspaceFolder}/install/pothole_detection/share/pothole_detection/config/params.yaml",
                 "-r", "__node:=debug_edge_warning_fusion",
                 // 调试态默认只接调试实例（不碰契约话题 /perception/edge_warning）：
                 // 与 “Debug pothole 前后雷达 + 融合” 组合调试时直接可用；
@@ -88,7 +93,9 @@
                 //   /pothole_detection_front/edge_warning_raw, /pothole_detection_rear/edge_warning_raw
                 "-p", "front_source_topic:=/debug_pothole_det_front/edge_warning_raw",
                 "-p", "rear_source_topic:=/debug_pothole_det_rear/edge_warning_raw",
-                "-p", "edge_warning_topic:=/debug/edge_warning"
+                "-p", "edge_warning_topic:=/debug/edge_warning",
+                // 急停也发到调试话题：调试期 DANGER 不得真的去锁停整车（生产名 /perception/stop_command）
+                "-p", "stop_command_topic:=/debug/stop_command"
             ],
             "cwd": "${workspaceFolder}",
             "environment": [

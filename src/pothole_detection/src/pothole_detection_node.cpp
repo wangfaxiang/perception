@@ -107,8 +107,10 @@ public:
     // 边坡告警: 本实例只发布「单雷达原始告警」到节点私有话题（契约 §9 命名要求），
     // 由 edge_warning_fusion 合并后发布契约话题 /perception/edge_warning
     this->declare_parameter<std::string>("edge_warning_raw_topic", "~/edge_warning_raw");
-    this->declare_parameter("edge_danger_dist", 6.0);   // 最近距离 < 该值 → DANGER
-    this->declare_parameter("edge_caution_dist", 10.0); // 最近距离 < 该值 → CAUTION，否则 SAFE
+    // 边坡分档阈值：唯一真源 = config/params.yaml 的 /** 共享段（契约 §3.2 要求参数化）。
+    // 声明为「无默认值」——未提供则启动即失败，避免代码默认值与参数文件分叉。
+    this->declare_parameter("edge_danger_dist", rclcpp::ParameterType::PARAMETER_DOUBLE);
+    this->declare_parameter("edge_caution_dist", rclcpp::ParameterType::PARAMETER_DOUBLE);
     this->declare_parameter("edge_heartbeat_hz", 10.0); // 心跳频率（契约 §4.3 必须 ≥5Hz，建议 10Hz）
     this->declare_parameter("edge_timeout_s", 0.5);     // 点云断流判定超时（秒）→ 转安全默认值（§3.3）
 
@@ -140,6 +142,14 @@ public:
     this->get_parameter("edge_caution_dist", edge_caution_dist_);
     this->get_parameter("edge_heartbeat_hz", edge_heartbeat_hz_);
     this->get_parameter("edge_timeout_s", edge_timeout_s_);
+    if (!(edge_danger_dist_ > 0.0 && edge_caution_dist_ > edge_danger_dist_))
+    {
+      RCLCPP_FATAL(this->get_logger(),
+                   "边坡分档阈值非法（edge_danger_dist=%.1f, edge_caution_dist=%.1f）："
+                   "须 0 < danger < caution，见 config/params.yaml 的 /** 共享段",
+                   edge_danger_dist_, edge_caution_dist_);
+      throw std::runtime_error("invalid edge thresholds");
+    }
 
     // 心跳周期（频率非法时回退 10 Hz）
     if (!(edge_heartbeat_hz_ > 0.0)) edge_heartbeat_hz_ = 10.0;
