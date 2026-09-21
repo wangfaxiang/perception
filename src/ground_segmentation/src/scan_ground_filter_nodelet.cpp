@@ -126,7 +126,9 @@ void ScanGroundFilterComponent::convertPointcloudGridScan(
     normalizeRadian(std::atan2(grid_mode_switch_radius_ + grid_size_m_, virtual_lidar_z_)) -
     normalizeRadian(std::atan2(grid_mode_switch_radius_, virtual_lidar_z_));
   for (size_t i = 0; i < in_cloud->points.size(); ++i) {
-    if (!pcl::isFinite(in_cloud->points[i])) {
+    if (!std::isfinite(in_cloud->points[i].x) ||
+        !std::isfinite(in_cloud->points[i].y) ||
+        !std::isfinite(in_cloud->points[i].z)) {
       continue;
     }
     auto x{
@@ -182,7 +184,9 @@ void ScanGroundFilterComponent::convertPointcloud(
   PointRef current_point;
 
   for (size_t i = 0; i < in_cloud->points.size(); ++i) {
-    if (!pcl::isFinite(in_cloud->points[i])) {
+    if (!std::isfinite(in_cloud->points[i].x) ||
+        !std::isfinite(in_cloud->points[i].y) ||
+        !std::isfinite(in_cloud->points[i].z)) {
       continue;
     }
     auto radius{static_cast<float>(std::hypot(in_cloud->points[i].x, in_cloud->points[i].y))};

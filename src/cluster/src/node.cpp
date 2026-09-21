@@ -436,7 +436,8 @@ void Cluster::onPointCloud(const sensor_msgs::msg::PointCloud2::ConstSharedPtr i
     pcl::PointCloud<pcl::PointXYZ>::Ptr cloud_clean(new pcl::PointCloud<pcl::PointXYZ>);
     cloud_clean->reserve(cloud->size());
     for (const auto& p : cloud->points)
-        if (pcl::isFinite(p)) cloud_clean->push_back(p);
+        if (std::isfinite(p.x) && std::isfinite(p.y) && std::isfinite(p.z))
+            cloud_clean->push_back(p);
 
     // 体素降采样：E1R 高密度点云先抽稀，大幅降低聚类耗时
     pcl::PointCloud<pcl::PointXYZ>::Ptr cloud_filtered(new pcl::PointCloud<pcl::PointXYZ>);
