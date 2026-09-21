@@ -331,11 +331,11 @@ box_msg::msg::Boxs Cluster::clustersToBoxs(
         {
             continue;
         }
-        if (density <= 100.0f)
+        if (density <= 120.0f && indices.indices.size() <= 500.0f)
         {
-            // RCLCPP_INFO(this->get_logger(),
-            //             "[cluster] points=%zu 包围盒垂直最高值 top_z=%.2f m, 密度=%.2f pts/m^2",
-            //             indices.indices.size(), max_z, density);
+            RCLCPP_INFO(this->get_logger(),
+                        "[cluster] points=%zu 包围盒垂直最高值 top_z=%.2f m, 密度=%.2f pts/m^2",
+                        indices.indices.size(), max_z, density);
             continue;
         }
         // 包围盒对角线长度
@@ -351,7 +351,7 @@ box_msg::msg::Boxs Cluster::clustersToBoxs(
             //             diagonal, x_min);
             continue;
         }
-        if (diagonal <= 0.25f)
+        if (diagonal <= 0.20f)
         {
             // RCLCPP_INFO(this->get_logger(),
             //             "[cluster] 小目标过滤: diagonal=%.2f m", diagonal);

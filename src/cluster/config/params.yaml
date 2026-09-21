@@ -28,7 +28,7 @@ cluster_front:
     euclidean_marker_topic: "/front/box/cluster/euclidean/marker"
     region_rowing_marker_topic: "/front/box/cluster/region_rowing/marker"
 
-    cluster_tolerance: 0.20     # 欧氏聚类容差（米）
+    cluster_tolerance: 0.15     # 欧氏聚类容差（米）
     min_cluster_size: 15        # 最小簇点数
     max_cluster_size: 100000    # 最大簇点数
     region_rowing: false        # 是否同时跑区域生长聚类（调试用）
