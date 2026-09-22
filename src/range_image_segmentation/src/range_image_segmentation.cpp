@@ -1,47 +1,48 @@
 /**
  * @file range_image_segmentation.cpp
- * @brief 基于距离图像(range image)的地面分割 + 非地面障碍物聚类
+ * @brief 统一沟壑(负障碍) + 悬崖边缘检测
  *
- * 方法参考 LeGO-LOAM imageProjection.cpp 的 projectPointCloud / groundRemoval /
- * cloudSegmentation，并针对速腾聚创 E1R 全固态雷达做适配:
- *   - E1R 为 120°(水平) x 90°(垂直) 前视雷达，非 360° 环绕，故列映射
- *     改为前视方位角区间，分割时水平边界不做 wrap-around。
- *   - E1R 输出 144 线规则结构点云，但 lidar_leveling 输出的调平点云
- *     为 PointXYZI（无 ring 字段），因此行号由俯仰角 asin(z/r) 反算，
- *     列号由方位角 atan2(y, x) 反算。
+ * 将调平点云按 (水平角, 俯仰角) 投影成一张 1° 网格图像(默认 120x45)，
+ * 在"距离连续"这一维上找断点：
+ *   Rule 1: 单个格子内，多点按距离排序，相邻两点距离差 > gap_thresh 的近侧点 -> 沟壑边缘
+ *   Rule 2: 水平相邻两格子，合并排序后找距离断点 -> 沟壑边缘(侧壁/横向边界)
+ *   Rule 3: 垂直相邻两格子，合并排序后找距离断点 -> 沟壑边缘(近沿)
+ *   Rule 4: 某列无沟壑时，取该列最上方有回波格子里最近的点 -> 悬崖边缘
  *
- * 输入 : 调平点云 /<lidar_name>/rslidar_points_leveled
- * 输出 : 地面点云      /<lidar_name>/ground_cloud
- *        聚类点云      /<lidar_name>/segmented_cloud_pure (intensity=簇号)
- *        聚类包围盒    /<lidar_name>/box/cluster/range_image (box_msg::Boxs)
- *        包围盒 Marker /<lidar_name>/box/cluster/range_image/marker
+ * 输入 : 调平点云 PointXYZI (lidar_leveling 输出)
+ * 输出 : /<lidar_name>/ditch_cloud (PointCloud2, intensity: 255=沟壑, 60=悬崖)
+ *        /<lidar_name>/ditch_line  (MarkerArray, LINE_STRIP)
  */
 
 #include <rclcpp/rclcpp.hpp>
+#include <std_msgs/msg/header.hpp>
 #include <sensor_msgs/msg/point_cloud2.hpp>
 #include <visualization_msgs/msg/marker.hpp>
 #include <visualization_msgs/msg/marker_array.hpp>
-
-#include <box_msg/msg/box.hpp>
-#include <box_msg/msg/boxs.hpp>
+#include <geometry_msgs/msg/point.hpp>
+#include <dth_messages/msg/edge_warning.hpp>
 
 #include <pcl_conversions/pcl_conversions.h>
 #include <pcl/point_cloud.h>
 #include <pcl/point_types.h>
+#include <pcl/filters/statistical_outlier_removal.h>
+
+#include <perception_common/motion_state.hpp>
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <limits>
-#include <map>
-#include <queue>
+#include <memory>
+#include <mutex>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace
 {
-constexpr double kDeg2Rad = M_PI / 180.0;
-constexpr int kInvalidLabel = 999999;
+constexpr double kPi = 3.14159265358979323846;
 }  // namespace
 
 class RangeImageSegmentation : public rclcpp::Node
@@ -50,477 +51,523 @@ public:
   RangeImageSegmentation()
   : Node("range_image_segmentation")
   {
-    const std::string lidar_name = declare_parameter<std::string>("lidar_name", "");
-    const std::string prefix = lidar_name.empty() ? "" : ("/" + lidar_name);
+    lidar_name_ = declare_parameter<std::string>("lidar_name", "");
+    const std::string prefix = lidar_name_.empty() ? "" : ("/" + lidar_name_);
 
-    const std::string input_topic =
+    input_topic_ =
       declare_parameter<std::string>("input_topic", prefix + "/rslidar_points_leveled");
-    const std::string ground_topic =
-      declare_parameter<std::string>("ground_topic", prefix + "/ground_cloud");
-    const std::string segmented_topic =
-      declare_parameter<std::string>("segmented_topic", prefix + "/segmented_cloud_pure");
-    const std::string boxs_topic =
-      declare_parameter<std::string>("boxs_topic", prefix + "/box/cluster/range_image");
-    const std::string marker_topic =
-      declare_parameter<std::string>("marker_topic", prefix + "/box/cluster/range_image/marker");
+    const std::string edge_cloud_topic =
+      declare_parameter<std::string>("edge_cloud_topic", prefix + "/ditch_cloud");
+    const std::string edge_line_topic =
+      declare_parameter<std::string>("edge_line_topic", prefix + "/ditch_line");
+    frame_id_ = declare_parameter<std::string>(
+      "frame_id", lidar_name_.empty() ? "rslidar" : lidar_name_ + "_rslidar");
 
-    // ---- 投影参数 ---- //
-    num_vertical_scans_ = declare_parameter<int>("num_vertical_scans", 144);
-    num_horizontal_scans_ = declare_parameter<int>("num_horizontal_scans", 180);
-    vertical_angle_bottom_ = declare_parameter<double>("vertical_angle_bottom", -75.0);
-    vertical_angle_top_ = declare_parameter<double>("vertical_angle_top", 15.0);
-    horizontal_fov_ = declare_parameter<double>("horizontal_fov", 120.0);
+    max_range_ = declare_parameter<double>("max_range", 12.0);
     min_range_ = declare_parameter<double>("min_range", 0.2);
+    gap_thresh_ = declare_parameter<double>("gap_thresh", 1.0);
+    edge_max_range_ = declare_parameter<double>("edge_max_range", 10.0);
+    outlier_mean_k_ = declare_parameter<int>("outlier_mean_k", 6);
+    outlier_std_mul_ = declare_parameter<double>("outlier_std_mul", 1.0);
 
-    // ---- 地面分割参数 ---- //
-    ground_scan_index_ = declare_parameter<int>("ground_scan_index", 100);
-    sensor_mount_angle_ = declare_parameter<double>("sensor_mount_angle", 0.0);
-    ground_angle_threshold_ = declare_parameter<double>("ground_angle_threshold", 10.0);
-    ground_z_threshold_ = declare_parameter<double>("ground_z_threshold", -1.1);
-
-    // ---- 分割参数 ---- //
-    segment_theta_ = declare_parameter<double>("segment_theta", 60.0);
-    segment_valid_point_num_ = declare_parameter<int>("segment_valid_point_num", 5);
-    segment_valid_line_num_ = declare_parameter<int>("segment_valid_line_num", 3);
-    min_cluster_size_ = declare_parameter<int>("min_cluster_size", 30);
-
-    if (ground_scan_index_ >= num_vertical_scans_) {
-      ground_scan_index_ = num_vertical_scans_ - 1;
+    // 边坡告警: 本实例只发布「单雷达原始告警」到节点私有话题，由 perception_common 包的
+    // warning_fusion 合并后发布契约话题 /perception/edge_warning 与 /perception/stop_command。
+    edge_topic_ =
+      declare_parameter<std::string>("edge_warning_raw_topic", "~/edge_warning_raw");
+    // 边坡分档阈值：唯一真源 = perception_common/config/params.yaml 的 /** 共享段
+    // （与 pothole_detection 一致），声明为「无默认值」——未提供则启动即失败。
+    this->declare_parameter("edge_danger_dist", rclcpp::ParameterType::PARAMETER_DOUBLE);
+    this->declare_parameter("edge_caution_dist", rclcpp::ParameterType::PARAMETER_DOUBLE);
+    edge_heartbeat_hz_ = declare_parameter<double>("edge_heartbeat_hz", 10.0);
+    edge_timeout_s_ = declare_parameter<double>("edge_timeout_s", 0.5);
+    this->get_parameter("edge_danger_dist", edge_danger_dist_);
+    this->get_parameter("edge_caution_dist", edge_caution_dist_);
+    if (!(edge_danger_dist_ > 0.0 && edge_caution_dist_ > edge_danger_dist_)) {
+      RCLCPP_FATAL(get_logger(),
+                   "边坡分档阈值非法（edge_danger_dist=%.1f, edge_caution_dist=%.1f）："
+                   "须 0 < danger < caution，见 config/params.yaml 的 /** 共享段",
+                   edge_danger_dist_, edge_caution_dist_);
+      throw std::runtime_error("invalid edge thresholds");
     }
+    if (!(edge_heartbeat_hz_ > 0.0)) edge_heartbeat_hz_ = 10.0;
+    edge_heartbeat_period_s_ = 1.0 / edge_heartbeat_hz_;
 
-    size_ = static_cast<size_t>(num_vertical_scans_) * num_horizontal_scans_;
-    ang_res_x_ = horizontal_fov_ * kDeg2Rad / num_horizontal_scans_;
-    ang_res_y_ =
-      (vertical_angle_top_ - vertical_angle_bottom_) * kDeg2Rad / (num_vertical_scans_ - 1);
-    ang_bottom_ = vertical_angle_bottom_ * kDeg2Rad;
-    half_fov_ = horizontal_fov_ * kDeg2Rad / 2.0;
-    sensor_mount_angle_rad_ = sensor_mount_angle_ * kDeg2Rad;
-    ground_angle_threshold_rad_ = ground_angle_threshold_ * kDeg2Rad;
-    segment_theta_tan_ = std::tan(segment_theta_ * kDeg2Rad);
+    // 定向检测门控（契约 §3.1/§6.2）：订阅 gate 镜像自判运动方向，决定本雷达是否参与检测
+    motion_gate_enable_ = declare_parameter<bool>("motion_gate_enable", true);
+    gate_ = std::make_unique<perception_common::MotionGate>(*this, lidar_name_);
 
-    nan_point_.x = nan_point_.y = nan_point_.z = std::numeric_limits<float>::quiet_NaN();
-    nan_point_.intensity = -1.0f;
+    const double horizontal_angle_min =
+      declare_parameter<double>("horizontal_angle_min", -60.0);
+    const double horizontal_angle_max =
+      declare_parameter<double>("horizontal_angle_max", 60.0);
+    const double horizontal_res = declare_parameter<double>("horizontal_res", 1.0);
+    const double vertical_angle_min =
+      declare_parameter<double>("vertical_angle_min", -45.0);
+    const double vertical_angle_max =
+      declare_parameter<double>("vertical_angle_max", 0.0);
+    const double vertical_res = declare_parameter<double>("vertical_res", 1.0);
 
-    full_cloud_.assign(size_, nan_point_);
-    range_mat_.assign(size_, std::numeric_limits<float>::max());
-    ground_mat_.assign(size_, 0);
-    label_mat_.assign(size_, 0);
-
-    ground_cloud_.reset(new pcl::PointCloud<pcl::PointXYZI>());
-    segmented_pure_.reset(new pcl::PointCloud<pcl::PointXYZI>());
+    cols_ = std::max(1, static_cast<int>(
+      std::lround((horizontal_angle_max - horizontal_angle_min) / horizontal_res)));
+    rows_ = std::max(1, static_cast<int>(
+      std::lround((vertical_angle_max - vertical_angle_min) / vertical_res)));
+    horiz_min_ = horizontal_angle_min;
+    horiz_max_ = horizontal_angle_max;
+    vert_min_ = vertical_angle_min;
+    vert_max_ = vertical_angle_max;
 
     sub_ = create_subscription<sensor_msgs::msg::PointCloud2>(
-      input_topic, rclcpp::SensorDataQoS(),
+      input_topic_, rclcpp::SensorDataQoS(),
       std::bind(&RangeImageSegmentation::onCloud, this, std::placeholders::_1));
-    pub_ground_ = create_publisher<sensor_msgs::msg::PointCloud2>(ground_topic, rclcpp::QoS(10));
-    pub_segmented_ =
-      create_publisher<sensor_msgs::msg::PointCloud2>(segmented_topic, rclcpp::QoS(10));
-    pub_boxs_ = create_publisher<box_msg::msg::Boxs>(boxs_topic, rclcpp::QoS(10));
-    pub_marker_ =
-      create_publisher<visualization_msgs::msg::MarkerArray>(marker_topic, rclcpp::QoS(10));
+    pub_edge_cloud_ =
+      create_publisher<sensor_msgs::msg::PointCloud2>(edge_cloud_topic, rclcpp::QoS(10));
+    pub_edge_line_ =
+      create_publisher<visualization_msgs::msg::MarkerArray>(edge_line_topic, rclcpp::QoS(10));
+    pub_edge_ =
+      create_publisher<dth_messages::msg::EdgeWarning>(edge_topic_, rclcpp::QoS(10));
+
+    // 心跳：与点云解耦周期发布（契约 §4.3 必须 ≥5Hz）；点云断流时输出安全默认值（§3.3）。
+    edge_heartbeat_timer_ = create_wall_timer(
+      std::chrono::duration<double>(edge_heartbeat_period_s_),
+      std::bind(&RangeImageSegmentation::onEdgeHeartbeat, this));
 
     RCLCPP_INFO(
       get_logger(),
-      "range_image_segmentation started (lidar_name=%s): input=%s, grid=%dx%d, "
-      "fov=%.1f deg, vertical=[%.1f, %.1f] deg, ground_scan_index=%d",
-      lidar_name.c_str(), input_topic.c_str(), num_vertical_scans_, num_horizontal_scans_,
-      horizontal_fov_, vertical_angle_bottom_, vertical_angle_top_, ground_scan_index_);
+      "range_image_segmentation started (lidar_name=%s): input=%s, image=%dx%d, "
+      "horizontal=[%.1f,%.1f]deg, vertical=[%.1f,%.1f]deg, "
+      "max_range=%.1fm, gap_thresh=%.2fm, edge_warning=%s [danger<%.1fm, caution<%.1fm, "
+      "heartbeat=%.1fHz, timeout=%.2fs]",
+      lidar_name_.c_str(), input_topic_.c_str(), cols_, rows_, horiz_min_, horiz_max_,
+      vert_min_, vert_max_, max_range_, gap_thresh_, edge_topic_.c_str(),
+      edge_danger_dist_, edge_caution_dist_, edge_heartbeat_hz_, edge_timeout_s_);
+    RCLCPP_INFO(get_logger(), "定向检测门控: %s（%s）",
+                motion_gate_enable_ ? "on" : "off", gate_->describe().c_str());
   }
 
 private:
-  void resetMatrices()
-  {
-    range_mat_.assign(size_, std::numeric_limits<float>::max());
-    ground_mat_.assign(size_, 0);
-    label_mat_.assign(size_, 0);
-    std::fill(full_cloud_.begin(), full_cloud_.end(), nan_point_);
-    ground_cloud_->clear();
-    segmented_pure_->clear();
-    label_count_ = 1;
-  }
+  // 每个格子存 (距离, 全局点 id)
+  using Cell = std::vector<std::pair<float, int>>;
 
   void onCloud(const sensor_msgs::msg::PointCloud2::SharedPtr msg)
   {
-    pcl::PointCloud<pcl::PointXYZI>::Ptr cloud(new pcl::PointCloud<pcl::PointXYZI>());
-    pcl::fromROSMsg(*msg, *cloud);
+    // ---- 定向检测门控（契约 §3.1/§6.2）----
+    // 前进只测前方、后退只测后方；不参与检测的一侧整帧跳过点云处理（省算力），
+    // 但仍按帧发布安全告警，保证原始告警话题不断流、融合侧能判断本实例在线。
+    const auto motion = gate_->state();
+    const bool detect = !motion_gate_enable_ || gate_->active();
 
-    // 去除无效点（NaN/Inf）
-    pcl::PointCloud<pcl::PointXYZI>::Ptr cloud_clean(new pcl::PointCloud<pcl::PointXYZI>());
-    cloud_clean->reserve(cloud->size());
-    for (const auto & p : cloud->points) {
-      if (std::isfinite(p.x) && std::isfinite(p.y) && std::isfinite(p.z)) {
-        cloud_clean->push_back(p);
-      }
+    if (motion != last_motion_) {
+      RCLCPP_INFO(get_logger(), "%s 运动方向 %s → %s（%s）",
+                  perception_common::toString(gate_->side()),
+                  perception_common::toString(last_motion_),
+                  perception_common::toString(motion),
+                  detect ? "参与检测" : "门控跳过");
+      last_motion_ = motion;
     }
 
-    resetMatrices();
-    laser_cloud_in_ = cloud_clean;
+    if (!detect) {
+      RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 2000,
+                           "%s 门控跳过检测（运动方向 %s），发布安全默认值",
+                           perception_common::toString(gate_->side()),
+                           perception_common::toString(motion));
+      publishSafeEdge();
+      return;
+    }
 
-    projectPointCloud();
-    groundRemoval();
-    cloudSegmentation();
-    publishClouds(msg->header);
-  }
+    pcl::PointCloud<pcl::PointXYZI> cloud;
+    pcl::fromROSMsg(*msg, cloud);
 
-  void projectPointCloud()
-  {
-    for (const auto & pt : laser_cloud_in_->points) {
-      const float range = std::sqrt(pt.x * pt.x + pt.y * pt.y + pt.z * pt.z);
-      if (range < min_range_) {
+    const int cell_count = cols_ * rows_;
+    std::vector<Cell> cells(cell_count);
+    std::vector<pcl::PointXYZI> points;   // 全局点表, 下标即 id
+    std::vector<int> point_cell;          // 每个点所属格子 index
+    points.reserve(cloud.size());
+    point_cell.reserve(cloud.size());
+
+    // 投影: (方位角, 俯仰角) -> (col, row)
+    for (const auto & p : cloud.points) {
+      if (!std::isfinite(p.x) || !std::isfinite(p.y) || !std::isfinite(p.z)) {
+        continue;
+      }
+      const float range = std::sqrt(p.x * p.x + p.y * p.y + p.z * p.z);
+      if (range < min_range_ || range > max_range_) {
         continue;
       }
 
-      // 行号：俯仰角 asin(z / r)
-      const float vertical_angle = std::asin(pt.z / range);
-      const int row = static_cast<int>(std::round((vertical_angle - ang_bottom_) / ang_res_y_));
-      if (row < 0 || row >= num_vertical_scans_) {
+      const double azimuth = std::atan2(p.y, p.x) * 180.0 / kPi;
+      const double elevation = std::asin(p.z / range) * 180.0 / kPi;
+      if (azimuth < horiz_min_ || azimuth > horiz_max_) {
+        continue;
+      }
+      if (elevation < vert_min_ || elevation > vert_max_) {
         continue;
       }
 
-      // 列号：方位角 atan2(y, x)，前视 120°，左右各 60°
-      const float azimuth = std::atan2(pt.y, pt.x);
-      if (azimuth < -half_fov_ || azimuth > half_fov_) {
+      // 推进梁过滤：雷达前方近处、接近水平、且高于雷达的结构件
+      // if (elevation > -10.0 && range < 3.0 && p.z > -0.5f) {
+      //   continue;
+      // }
+      if (range < 3.0 && p.z > -1.0f) {
+        continue;
+      }      
+
+      // row: 上=vert_max(0°), 下=vert_min(-45°)
+      int col = static_cast<int>((azimuth - horiz_min_) / (horiz_max_ - horiz_min_) * cols_);
+      int row = static_cast<int>((vert_max_ - elevation) / (vert_max_ - vert_min_) * rows_);
+      col = std::clamp(col, 0, cols_ - 1);
+      row = std::clamp(row, 0, rows_ - 1);
+
+      const int id = static_cast<int>(points.size());
+      points.push_back(p);
+      point_cell.push_back(row * cols_ + col);
+      cells[row * cols_ + col].emplace_back(range, id);
+    }
+
+    std::vector<uint8_t> flagged(points.size(), 0);
+    std::vector<uint8_t> is_cliff(points.size(), 0);
+    std::vector<uint8_t> col_has_ditch(cols_, 0);
+
+    // 在已按距离升序的序列里找相邻断点, 近侧点标记为沟壑边缘
+    auto detectGaps = [&](const Cell & sorted) {
+      for (size_t i = 0; i + 1 < sorted.size(); ++i) {
+        if (sorted[i + 1].first - sorted[i].first > gap_thresh_) {
+          const int id = sorted[i].second;
+          flagged[id] = 1;
+          col_has_ditch[point_cell[id] % cols_] = 1;
+        }
+      }
+    };
+
+    // Rule 1: 单格内
+    for (auto & cell : cells) {
+      if (cell.size() < 2) {
         continue;
       }
-      int col = static_cast<int>(std::round((azimuth + half_fov_) / ang_res_x_));
-      col = std::clamp(col, 0, num_horizontal_scans_ - 1);
-
-      const size_t index = col + row * num_horizontal_scans_;
-      range_mat_[index] = range;
-
-      pcl::PointXYZI p = pt;
-      // 保留 row/col 信息（与 LeGO-LOAM 一致，便于调试）
-      p.intensity = static_cast<float>(row) + static_cast<float>(col) / 10000.0f;
-      full_cloud_[index] = p;
+      std::sort(cell.begin(), cell.end());
+      detectGaps(cell);
     }
+
+    // 两格合并排序找断点
+    auto checkPair = [&](const Cell & a, const Cell & b) {
+      if (a.size() + b.size() < 2) {
+        return;
+      }
+      Cell merged;
+      merged.reserve(a.size() + b.size());
+      merged.insert(merged.end(), a.begin(), a.end());
+      merged.insert(merged.end(), b.begin(), b.end());
+      std::sort(merged.begin(), merged.end());
+      detectGaps(merged);
+    };
+
+    // Rule 2: 水平相邻
+    for (int r = 0; r < rows_; ++r) {
+      for (int c = 0; c + 1 < cols_; ++c) {
+        checkPair(cells[r * cols_ + c], cells[r * cols_ + c + 1]);
+      }
+    }
+
+    // Rule 3: 垂直相邻
+    for (int c = 0; c < cols_; ++c) {
+      for (int r = 0; r + 1 < rows_; ++r) {
+        checkPair(cells[r * cols_ + c], cells[(r + 1) * cols_ + c]);
+      }
+    }
+
+    // Rule 4: 无沟壑的列, 取最上方有回波格子里最近的点作为悬崖
+    for (int c = 0; c < cols_; ++c) {
+      if (col_has_ditch[c]) {
+        continue;
+      }
+      int topmost = -1;
+      for (int r = 0; r < rows_; ++r) {
+        if (!cells[r * cols_ + c].empty()) {
+          topmost = r;
+          break;
+        }
+      }
+      if (topmost < 0) {
+        continue;
+      }
+      const Cell & cell = cells[topmost * cols_ + c];  // Rule 1 后已按距离升序
+      const int id = cell.front().second;
+      flagged[id] = 1;
+      is_cliff[id] = 1;
+    }
+
+    publish(msg->header, points, flagged, is_cliff);
   }
 
-  void groundRemoval()
+  void publish(
+    const std_msgs::msg::Header & header,
+    const std::vector<pcl::PointXYZI> & points,
+    const std::vector<uint8_t> & flagged,
+    const std::vector<uint8_t> & is_cliff)
   {
-    const float max_float = std::numeric_limits<float>::max();
-
-    // 逐列、逐相邻行判断地面
-    for (int col = 0; col < num_horizontal_scans_; ++col) {
-      for (int row = 0; row < ground_scan_index_; ++row) {
-        const size_t lower = col + row * num_horizontal_scans_;
-        const size_t upper = col + (row + 1) * num_horizontal_scans_;
-
-        if (range_mat_[lower] == max_float || range_mat_[upper] == max_float) {
-          ground_mat_[lower] = -1;
-          continue;
-        }
-
-        const float dX = full_cloud_[upper].x - full_cloud_[lower].x;
-        const float dY = full_cloud_[upper].y - full_cloud_[lower].y;
-        const float dZ = full_cloud_[upper].z - full_cloud_[lower].z;
-        const float vertical_angle = std::atan2(dZ, std::sqrt(dX * dX + dY * dY + dZ * dZ));
-
-        // 绝对高度约束：只有 z 低于阈值的点才可作为地面候选，避免高处平坦物误判
-        const bool below_z_threshold =
-          full_cloud_[lower].z < ground_z_threshold_ &&
-          full_cloud_[upper].z < ground_z_threshold_;
-
-        if (below_z_threshold &&
-          std::fabs(vertical_angle - sensor_mount_angle_rad_) <= ground_angle_threshold_rad_) {
-          ground_mat_[lower] = 1;
-          ground_mat_[upper] = 1;
-        }
+    pcl::PointCloud<pcl::PointXYZI> edge;
+    for (size_t id = 0; id < points.size(); ++id) {
+      if (!flagged[id]) {
+        continue;
       }
+      pcl::PointXYZI p = points[id];
+      const float range = std::sqrt(p.x * p.x + p.y * p.y + p.z * p.z);
+      if (range > edge_max_range_) {
+        continue;
+      }
+      p.intensity = is_cliff[id] ? 60.0f : 255.0f;  // 悬崖暗, 沟壑亮(仅调试用)
+      edge.push_back(p);
     }
 
-    // 地面点和无效点不再参与后续分割
-    for (size_t i = 0; i < size_; ++i) {
-      if (ground_mat_[i] == 1 || range_mat_[i] == max_float) {
-        label_mat_[i] = -1;
-      }
-    }
-
-    // 提取地面点云
-    for (int row = 0; row <= ground_scan_index_; ++row) {
-      for (int col = 0; col < num_horizontal_scans_; ++col) {
-        const size_t index = col + row * num_horizontal_scans_;
-        if (ground_mat_[index] == 1) {
-          ground_cloud_->points.push_back(full_cloud_[index]);
-        }
-      }
-    }
-  }
-
-  void cloudSegmentation()
-  {
-    for (int row = 0; row < num_vertical_scans_; ++row) {
-      for (int col = 0; col < num_horizontal_scans_; ++col) {
-        if (label_mat_[col + row * num_horizontal_scans_] == 0) {
-          labelComponents(row, col);
-        }
-      }
-    }
-  }
-
-  void labelComponents(int row, int col)
-  {
-    const int n_col = num_horizontal_scans_;
-    const int n_row = num_vertical_scans_;
-
-    std::queue<int> queue;
-    std::vector<int> all_pushed;
-    std::vector<bool> line_count_flag(n_row, false);
-
-    const int start = row * n_col + col;
-    queue.push(start);
-    all_pushed.push_back(start);
-
-    // 4 邻域：左 / 上 / 下 / 右（行偏移, 列偏移）
-    static const int dR[4] = {0, -1, 1, 0};
-    static const int dC[4] = {-1, 0, 0, 1};
-
-    while (!queue.empty()) {
-      const int idx = queue.front();
-      queue.pop();
-      label_mat_[idx] = label_count_;
-
-      const int r = idx / n_col;
-      const int c = idx % n_col;
-
-      for (int k = 0; k < 4; ++k) {
-        const int nr = r + dR[k];
-        const int nc = c + dC[k];
-
-        if (nr < 0 || nr >= n_row) {
-          continue;
-        }
-        // 前视雷达：水平两端是真实边界，不做 wrap-around
-        if (nc < 0 || nc >= n_col) {
-          continue;
-        }
-
-        const int nidx = nr * n_col + nc;
-        if (label_mat_[nidx] != 0) {
-          continue;
-        }
-
-        const float d1 = std::max(range_mat_[idx], range_mat_[nidx]);
-        const float d2 = std::min(range_mat_[idx], range_mat_[nidx]);
-        const float alpha = (dR[k] == 0) ? ang_res_x_ : ang_res_y_;
-        const float tang = d2 * std::sin(alpha) / (d1 - d2 * std::cos(alpha));
-
-        if (tang > segment_theta_tan_) {
-          queue.push(nidx);
-          label_mat_[nidx] = label_count_;
-          line_count_flag[nr] = true;
-          all_pushed.push_back(nidx);
-        }
-      }
-    }
-
-    // 判定该簇是否为有效障碍物
-    bool feasible = false;
-    if (all_pushed.size() >= static_cast<size_t>(min_cluster_size_)) {
-      feasible = true;
-    } else if (all_pushed.size() >= static_cast<size_t>(segment_valid_point_num_)) {
-      int line_count = 0;
-      for (const bool f : line_count_flag) {
-        if (f) {
-          ++line_count;
-        }
-      }
-      if (line_count >= segment_valid_line_num_) {
-        feasible = true;
-      }
-    }
-
-    if (feasible) {
-      ++label_count_;
+    // 统计离群点移除：剔除 k 近邻平均距离明显偏大的孤立点
+    pcl::PointCloud<pcl::PointXYZI> edge_filtered;
+    if (edge.size() > static_cast<size_t>(outlier_mean_k_)) {
+      pcl::StatisticalOutlierRemoval<pcl::PointXYZI> sor;
+      sor.setInputCloud(edge.makeShared());
+      sor.setMeanK(outlier_mean_k_);
+      sor.setStddevMulThresh(outlier_std_mul_);
+      sor.filter(edge_filtered);
     } else {
-      for (const int idx : all_pushed) {
-        label_mat_[idx] = kInvalidLabel;
-      }
-    }
-  }
-
-  box_msg::msg::Boxs buildBoxs(const std_msgs::msg::Header & header)
-  {
-    box_msg::msg::Boxs boxs;
-    boxs.header = header;
-
-    // 按簇号收集点，同时填充带簇号的聚类点云
-    std::map<int, std::vector<size_t>> clusters;
-    for (size_t i = 0; i < size_; ++i) {
-      const int lab = label_mat_[i];
-      if (lab > 0 && lab != kInvalidLabel) {
-        clusters[lab].push_back(i);
-
-        pcl::PointXYZI p = full_cloud_[i];
-        p.intensity = static_cast<float>(lab);
-        segmented_pure_->points.push_back(p);
-      }
+      edge_filtered = edge;
     }
 
-    for (const auto & kv : clusters) {
-      bool first = true;
-      float min_x = 0.0f, min_y = 0.0f, min_z = 0.0f;
-      float max_x = 0.0f, max_y = 0.0f, max_z = 0.0f;
-      for (const size_t idx : kv.second) {
-        const auto & p = full_cloud_[idx];
-        if (first) {
-          min_x = max_x = p.x;
-          min_y = max_y = p.y;
-          min_z = max_z = p.z;
-          first = false;
-        } else {
-          min_x = std::min(min_x, p.x);
-          max_x = std::max(max_x, p.x);
-          min_y = std::min(min_y, p.y);
-          max_y = std::max(max_y, p.y);
-          min_z = std::min(min_z, p.z);
-          max_z = std::max(max_z, p.z);
+    // 边缘点云
+    sensor_msgs::msg::PointCloud2 cloud_msg;
+    pcl::toROSMsg(edge_filtered, cloud_msg);
+    cloud_msg.header = header;
+    pub_edge_cloud_->publish(cloud_msg);
+
+    // 按方位角排序（用于线段）
+    std::vector<std::pair<double, int>> order;  // (方位角, 在 edge_filtered 中的下标)
+    order.reserve(edge_filtered.size());
+    for (int i = 0; i < static_cast<int>(edge_filtered.size()); ++i) {
+      const auto & p = edge_filtered[i];
+      order.emplace_back(std::atan2(p.y, p.x), i);
+    }
+
+    // 边缘线段
+    visualization_msgs::msg::MarkerArray array;
+    visualization_msgs::msg::Marker clear;
+    clear.header = header;
+    clear.ns = "ditch";
+    clear.id = 0;
+    clear.action = visualization_msgs::msg::Marker::DELETEALL;
+    array.markers.push_back(clear);
+
+    if (!edge_filtered.empty()) {
+      std::sort(order.begin(), order.end());
+
+      // 调试：每 10 个点打印一次 z / 垂直角 / range
+      // RCLCPP_INFO(get_logger(), "----------------------------------------");
+      // for (size_t i = 0; i < order.size(); i += 3) {
+      //   const auto & p = edge_filtered[order[i].second];
+      //   const float range = std::sqrt(p.x * p.x + p.y * p.y + p.z * p.z);
+      //   const double elevation = std::asin(p.z / range) * 180.0 / kPi;
+      //   RCLCPP_INFO(get_logger(), "[edge] z=%.3f elev=%.2fdeg range=%.3fm",
+      //               p.z, elevation, range);
+      // }
+
+      // 每 3 个点取平均坐标作为代表，平滑
+      std::vector<geometry_msgs::msg::Point> sampled;
+      sampled.reserve(order.size() / 3 + 1);
+      for (size_t i = 0; i < order.size(); i += 3) {
+        const size_t end = std::min(order.size(), i + 3);
+        double sx = 0.0, sy = 0.0, sz = 0.0;
+        for (size_t j = i; j < end; ++j) {
+          const auto & q = edge_filtered[order[j].second];
+          sx += q.x;
+          sy += q.y;
+          sz += q.z;
         }
-      }
-      if (first) {
-        continue;
+        const double n = static_cast<double>(end - i);
+        geometry_msgs::msg::Point pt;
+        pt.x = static_cast<float>(sx / n);
+        pt.y = static_cast<float>(sy / n);
+        pt.z = static_cast<float>(sz / n);
+        sampled.push_back(pt);
       }
 
-      box_msg::msg::Box b;
-      b.x = (min_x + max_x) / 2.0f;
-      b.y = (min_y + max_y) / 2.0f;
-      b.z = (min_z + max_z) / 2.0f;
-      b.w = max_x - min_x;
-      b.l = max_y - min_y;
-      b.h = max_z - min_z;
-      b.vx = 0.0f;
-      b.vy = 0.0f;
-      b.rt = 0.0f;
-      b.id = kv.first;
-      b.score = 0.0f;
-      b.track_id = "";
-      b.label = "";
-      boxs.box.push_back(b);
+      visualization_msgs::msg::Marker line;
+      line.header = header;
+      line.ns = "ditch";
+      line.id = 0;
+      line.type = visualization_msgs::msg::Marker::LINE_STRIP;
+      line.action = visualization_msgs::msg::Marker::ADD;
+      line.scale.x = 0.1;
+      line.color.r = 1.0f;
+      line.color.g = 0.0f;
+      line.color.b = 0.0f;
+      line.color.a = 1.0f;
+      line.pose.orientation.w = 1.0;
+      line.points.reserve(sampled.size());
+      for (const auto & pt : sampled) {
+        line.points.push_back(pt);
+      }
+      array.markers.push_back(line);
     }
 
-    return boxs;
+    pub_edge_line_->publish(array);
+
+    // ---- 边坡告警（原始告警，由 warning_fusion 合并发布契约话题）----
+    publishEdgeWarning(edge_filtered);
   }
 
-  visualization_msgs::msg::MarkerArray boxsToMarkerArray(const box_msg::msg::Boxs & boxs)
+  // 根据本帧边缘点云计算并发布原始边坡告警（由 warning_fusion 合并为契约话题）
+  void publishEdgeWarning(const pcl::PointCloud<pcl::PointXYZI> & edge)
   {
-    visualization_msgs::msg::MarkerArray marker_array;
-
-    // 先清空该命名空间下的旧 Marker，避免上一帧残留
-    visualization_msgs::msg::Marker clear_marker;
-    clear_marker.header = boxs.header;
-    clear_marker.ns = "range_image_seg";
-    clear_marker.id = 0;
-    clear_marker.action = visualization_msgs::msg::Marker::DELETEALL;
-    marker_array.markers.push_back(clear_marker);
-
-    int id = 1;
-    const int n = static_cast<int>(boxs.box.size());
-    for (const auto & b : boxs.box) {
-      visualization_msgs::msg::Marker marker;
-      marker.header = boxs.header;
-      marker.ns = "range_image_seg";
-      marker.id = id;
-      marker.type = visualization_msgs::msg::Marker::CUBE;
-      marker.action = visualization_msgs::msg::Marker::ADD;
-      marker.pose.position.x = b.x;
-      marker.pose.position.y = b.y;
-      marker.pose.position.z = b.z;
-      marker.pose.orientation.w = 1.0;
-      marker.scale.x = std::max(b.w, 0.1f);
-      marker.scale.y = std::max(b.l, 0.1f);
-      marker.scale.z = std::max(b.h, 0.1f);
-
-      // 不同簇使用不同颜色
-      const float h = (n > 1) ? (static_cast<float>(id - 1) / static_cast<float>(n)) : 0.0f;
-      const float s = 0.9f, v = 1.0f;
-      const int hi = static_cast<int>(std::floor(h * 6.0f));
-      const float f = h * 6.0f - hi;
-      const float p = v * (1.0f - s);
-      const float q = v * (1.0f - s * f);
-      const float t = v * (1.0f - s * (1.0f - f));
-      switch (hi % 6) {
-        case 0: marker.color.r = v; marker.color.g = t; marker.color.b = p; break;
-        case 1: marker.color.r = q; marker.color.g = v; marker.color.b = p; break;
-        case 2: marker.color.r = p; marker.color.g = v; marker.color.b = t; break;
-        case 3: marker.color.r = p; marker.color.g = q; marker.color.b = v; break;
-        case 4: marker.color.r = t; marker.color.g = p; marker.color.b = v; break;
-        default: marker.color.r = v; marker.color.g = p; marker.color.b = q; break;
+    dth_messages::msg::EdgeWarning msg;
+    if (!edge.empty()) {
+      double min_dist = std::numeric_limits<double>::max();
+      for (const auto & p : edge.points) {
+        min_dist = std::min(min_dist, static_cast<double>(std::hypot(p.x, p.y)));
       }
-      marker.color.a = 0.5f;
-      marker_array.markers.push_back(marker);
-      ++id;
+      msg.dist_to_edge_m = static_cast<float>(min_dist);
+      if (min_dist < edge_danger_dist_) {
+        msg.warning = true;
+        msg.level = dth_messages::msg::EdgeWarning::LEVEL_DANGER;
+      } else if (min_dist <= edge_caution_dist_) {
+        msg.warning = true;
+        msg.level = dth_messages::msg::EdgeWarning::LEVEL_CAUTION;
+      } else {
+        msg.warning = false;
+        msg.level = dth_messages::msg::EdgeWarning::LEVEL_SAFE;
+      }
+      RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 2000,
+                           "%s 检测到边坡: 最近距离=%.2f m（边缘 %zu pts）→ %s "
+                           "（报警阈值 %.1f m / 停车阈值 %.1f m）",
+                           perception_common::toString(gate_->side()),
+                           min_dist, edge.size(), levelName(msg.level),
+                           edge_caution_dist_, edge_danger_dist_);
+    } else {
+      msg.dist_to_edge_m = 999.0f;
+      msg.warning = false;
+      msg.level = dth_messages::msg::EdgeWarning::LEVEL_SAFE;
+      RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 2000,
+                           "%s 没有检测到边坡 → SAFE（报警阈值 %.1f m / 停车阈值 %.1f m）",
+                           perception_common::toString(gate_->side()),
+                           edge_caution_dist_, edge_danger_dist_);
     }
 
-    return marker_array;
+    std::lock_guard<std::mutex> lock(edge_mutex_);
+    cloud_seen_ = true;
+    last_cloud_time_ = this->now();
+    publishEdgeLocked(msg);
+    last_edge_ = msg;
   }
 
-  void publishClouds(const std_msgs::msg::Header & header)
+  // 发布安全告警（999.0 / SAFE）并刷新心跳时间戳：
+  // 门控跳过检测的一侧即由此保持「在线 + 安全」语义（契约 §4.3）
+  void publishSafeEdge()
   {
-    // 地面点云
-    sensor_msgs::msg::PointCloud2 ground_msg;
-    pcl::toROSMsg(*ground_cloud_, ground_msg);
-    ground_msg.header = header;
-    pub_ground_->publish(ground_msg);
+    dth_messages::msg::EdgeWarning msg;
+    msg.warning = false;
+    msg.dist_to_edge_m = 999.0f;
+    msg.level = dth_messages::msg::EdgeWarning::LEVEL_SAFE;
 
-    // 聚类点云 + 包围盒
-    const box_msg::msg::Boxs boxs = buildBoxs(header);
-
-    sensor_msgs::msg::PointCloud2 seg_msg;
-    pcl::toROSMsg(*segmented_pure_, seg_msg);
-    seg_msg.header = header;
-    pub_segmented_->publish(seg_msg);
-
-    pub_boxs_->publish(boxs);
-    pub_marker_->publish(boxsToMarkerArray(boxs));
+    std::lock_guard<std::mutex> lock(edge_mutex_);
+    cloud_seen_ = true;
+    last_cloud_time_ = this->now();
+    publishEdgeLocked(msg);
+    last_edge_ = msg;
   }
+
+  // 填充 header 并发布（调用方需持有 edge_mutex_）
+  void publishEdgeLocked(dth_messages::msg::EdgeWarning & msg)
+  {
+    msg.header.stamp = this->now();
+    msg.header.frame_id = frame_id_;
+    pub_edge_->publish(msg);
+    last_edge_publish_time_ = msg.header.stamp;
+  }
+
+  // 心跳定时器：与点云处理解耦，保证原始告警周期发布（契约 §4.3 ≥5Hz）；
+  // 点云断流超过 edge_timeout_s 时切换为安全默认值（契约 §3.3）。
+  void onEdgeHeartbeat()
+  {
+    std::lock_guard<std::mutex> lock(edge_mutex_);
+    const rclcpp::Time now = this->now();
+    const bool sensor_ok =
+        cloud_seen_ && (now - last_cloud_time_).seconds() <= edge_timeout_s_;
+
+    if (!sensor_ok) {
+      if (cloud_seen_ && !stale_warned_) {
+        RCLCPP_WARN(get_logger(),
+                    "%s 点云 %s 断流超过 %.2f s，原始边坡告警转安全默认值（999.0/SAFE）",
+                    perception_common::toString(gate_->side()),
+                    input_topic_.c_str(), edge_timeout_s_);
+        stale_warned_ = true;
+      }
+      dth_messages::msg::EdgeWarning safe;
+      safe.warning = false;
+      safe.dist_to_edge_m = 999.0f;
+      safe.level = dth_messages::msg::EdgeWarning::LEVEL_SAFE;
+      publishEdgeLocked(safe);
+      return;
+    }
+
+    if (stale_warned_) {
+      RCLCPP_INFO(get_logger(), "%s 点云 %s 恢复，原始边坡告警恢复正常检测输出",
+                  perception_common::toString(gate_->side()), input_topic_.c_str());
+      stale_warned_ = false;
+    }
+
+    if ((now - last_edge_publish_time_).seconds() >= edge_heartbeat_period_s_ * 1.5) {
+      dth_messages::msg::EdgeWarning msg = last_edge_;
+      publishEdgeLocked(msg);
+    }
+  }
+
+  static const char * levelName(uint8_t level)
+  {
+    switch (level) {
+      case dth_messages::msg::EdgeWarning::LEVEL_DANGER:  return "DANGER";
+      case dth_messages::msg::EdgeWarning::LEVEL_CAUTION: return "CAUTION";
+      default: return "SAFE";
+    }
+  }
+
+  // ---- 参数 ---- //
+  double max_range_ = 12.0;
+  double min_range_ = 0.2;
+  double gap_thresh_ = 1.0;
+  double edge_max_range_ = 10.0;
+  int outlier_mean_k_ = 6;
+  double outlier_std_mul_ = 1.0;
+  double horiz_min_ = -60.0;
+  double horiz_max_ = 60.0;
+  double vert_min_ = -45.0;
+  double vert_max_ = 0.0;
+  int cols_ = 120;
+  int rows_ = 45;
+
+  std::string lidar_name_;
+  std::string input_topic_;
+  std::string frame_id_;
+  std::string edge_topic_;
+  double edge_danger_dist_ = 5.0;
+  double edge_caution_dist_ = 10.0;
+  double edge_heartbeat_hz_ = 10.0;
+  double edge_heartbeat_period_s_ = 0.1;
+  double edge_timeout_s_ = 0.5;
+
+  // 定向检测门控（契约 §3.1/§6.2）：共用 perception_common/motion_state.hpp
+  std::unique_ptr<perception_common::MotionGate> gate_;
+  bool motion_gate_enable_ = true;
+  perception_common::MotionState last_motion_{perception_common::MotionState::kStopped};
 
   // ---- 订阅 / 发布 ---- //
   rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr sub_;
-  rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pub_ground_;
-  rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pub_segmented_;
-  rclcpp::Publisher<box_msg::msg::Boxs>::SharedPtr pub_boxs_;
-  rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr pub_marker_;
+  rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pub_edge_cloud_;
+  rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr pub_edge_line_;
+  rclcpp::Publisher<dth_messages::msg::EdgeWarning>::SharedPtr pub_edge_;
+  rclcpp::TimerBase::SharedPtr edge_heartbeat_timer_;
 
-  // ---- 投影参数 ---- //
-  int num_vertical_scans_ = 144;
-  int num_horizontal_scans_ = 180;
-  double vertical_angle_bottom_ = -75.0;
-  double vertical_angle_top_ = 15.0;
-  double horizontal_fov_ = 120.0;
-  double min_range_ = 0.2;
-
-  // ---- 地面分割参数 ---- //
-  int ground_scan_index_ = 100;
-  double sensor_mount_angle_ = 0.0;
-  double ground_angle_threshold_ = 10.0;
-  double ground_z_threshold_ = 1.1;
-
-  // ---- 分割参数 ---- //
-  double segment_theta_ = 60.0;
-  int segment_valid_point_num_ = 5;
-  int segment_valid_line_num_ = 3;
-  int min_cluster_size_ = 30;
-
-  // ---- 派生量 ---- //
-  size_t size_ = 0;
-  double ang_res_x_ = 0.0;
-  double ang_res_y_ = 0.0;
-  double ang_bottom_ = 0.0;
-  double half_fov_ = 0.0;
-  double sensor_mount_angle_rad_ = 0.0;
-  double ground_angle_threshold_rad_ = 0.0;
-  double segment_theta_tan_ = 0.0;
-
-  pcl::PointXYZI nan_point_;
-
-  // ---- 每帧数据 ---- //
-  pcl::PointCloud<pcl::PointXYZI>::Ptr laser_cloud_in_;
-  std::vector<float> range_mat_;
-  std::vector<int8_t> ground_mat_;
-  std::vector<int> label_mat_;
-  std::vector<pcl::PointXYZI> full_cloud_;
-  pcl::PointCloud<pcl::PointXYZI>::Ptr ground_cloud_;
-  pcl::PointCloud<pcl::PointXYZI>::Ptr segmented_pure_;
-  int label_count_ = 1;
+  // ---- 边坡告警心跳状态（onCloud 与心跳定时器共享，加锁保护）---- //
+  std::mutex edge_mutex_;
+  dth_messages::msg::EdgeWarning last_edge_;
+  rclcpp::Time last_cloud_time_;
+  rclcpp::Time last_edge_publish_time_;
+  bool cloud_seen_ = false;
+  bool stale_warned_ = false;
 };
 
 int main(int argc, char ** argv)

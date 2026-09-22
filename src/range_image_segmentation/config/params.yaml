@@ -1,68 +1,81 @@
-# 距离图像地面分割 + 障碍物聚类参数 —— 速腾聚创 E1R 固态雷达
+# 统一沟壑 + 悬崖边缘检测参数
 #
-# 方法参考 LeGO-LOAM imageProjection（projectPointCloud / groundRemoval / cloudSegmentation），
-# 针对 E1R 适配:
-#   - E1R: 120°(水平) x 90°(垂直) 前视、144 线、全固态。
-#   - 前视非 360° 环绕，水平边界不做 wrap-around。
-#   - 调平点云为 PointXYZI(无 ring)，行号由俯仰角 asin(z/r) 反算。
+# 将调平点云按 (水平角, 俯仰角) 投影成 1° 网格图像(默认 120x45)，
+# 在"距离连续"一维上找断点，输出 /<lidar>/ditch_cloud + /<lidar>/ditch_line。
 #
-# 角度约定(调平后坐标):
-#   vertical_angle_bottom/top 覆盖调平后点云的俯仰分布。
-#   雷达向下俯视安装 pitch=+30°、垂直 FOV 90° 时，调平后俯仰约 [-75°, +15°]。
+# 与 pothole_detection 一致：本节点同时发布单雷达原始边坡告警
+# ~/edge_warning_raw，由 perception_common 的 warning_fusion 合并为契约话题；
+# 分档阈值 edge_danger_dist / edge_caution_dist 在 perception_common/config/params.yaml
+# 的 /** 共享段（唯一真源，launch 同时加载两个文件）。
 
 # ============ 前雷达 (front) ============
 range_image_segmentation_front:
   ros__parameters:
     lidar_name: "front"
     input_topic: "/front/rslidar_points_leveled"
-    ground_topic: "/front/ground_cloud"
-    segmented_topic: "/front/segmented_cloud_pure"
-    boxs_topic: "/front/box/cluster/range_image"
-    marker_topic: "/front/box/cluster/range_image/marker"
+    edge_cloud_topic: "/front/ditch_cloud"
+    edge_line_topic: "/front/ditch_line"
+    frame_id: "front_rslidar"
 
-    # ---- 投影 ---- #
-    num_vertical_scans: 144        # E1R 线数（range image 行数）
-    num_horizontal_scans: 180      # range image 列数（120° 内每线约 180 点）
-    vertical_angle_bottom: -75.0   # 调平后最下方俯仰角（度）
-    vertical_angle_top: 15.0       # 调平后最上方俯仰角（度）
-    horizontal_fov: 120.0          # 水平视场角（度）
-    min_range: 0.2                 # 最小距离（m），小于该值的点丢弃
+    # ---- 边坡告警（本实例的原始告警，由 perception_common 的 warning_fusion 合并发布契约话题）----
+    # 分档阈值 edge_danger_dist / edge_caution_dist 见 perception_common/config/params.yaml 的 /** 共享段（唯一真源）
+    edge_warning_raw_topic: "/range_image_segmentation_front/edge_warning_raw"
+    edge_heartbeat_hz: 10.0    # 心跳频率（契约 §4.3 必须 ≥5Hz，建议 10Hz）
+    edge_timeout_s: 0.5        # 点云断流超过该时长 → 输出安全默认值（§3.3）
 
-    # ---- 地面分割 ---- #
-    ground_scan_index: 100         # 参与地面判定的最大行号（0~N-1，地面在下方低行号）
-    sensor_mount_angle: 0.0        # 雷达安装俯仰角（度），调平后为 0
-    ground_angle_threshold: 10.0   # 相邻线夹角与安装角的偏差阈值（度）
-    ground_z_threshold: -1.1        # 地面点高度上限（m）：z 低于该值才可作为地面候选
+    # ---- 定向检测门控（契约 §3.1/§6.2）----
+    motion_gate_enable: true
+    motion_cmd_topic: "/control/cmd_gate/cmd_vel"
+    motion_v_thresh: 0.05
+    motion_w_thresh: 0.05
+    motion_timeout_s: 0.5
 
-    # ---- 分割 ---- #
-    segment_theta: 60.0            # 角度分割阈值（度），越小分割越细
-    segment_valid_point_num: 5     # 有效簇最小点数（与 valid_line_num 联合判定）
-    segment_valid_line_num: 3      # 有效簇最少跨越行数
-    min_cluster_size: 30           # 簇点数达到该值直接视为有效障碍物
+    max_range: 12.0        # 只取 12m 内的点
+    min_range: 0.2         # 最小距离(m)，小于该值的点丢弃
+    gap_thresh: 1.0        # 相邻点距离差大于该值视为断点(m)
+    edge_max_range: 10.0   # 边缘点输出距离上限(m)，大于该值的边缘点丢弃
+    outlier_mean_k: 6      # 离群点判断的近邻数
+    outlier_std_mul: 1.0   # 离群点剔除的 std 倍数
+
+    horizontal_angle_min: -60.0   # 水平角下限(度)
+    horizontal_angle_max: 60.0    # 水平角上限(度)
+    horizontal_res: 1.0           # 水平分辨率(度/格)
+    vertical_angle_min: -45.0     # 俯仰角下限(度，最下方)
+    vertical_angle_max: 0.0       # 俯仰角上限(度，最上方/水平)
+    vertical_res: 1.0             # 垂直分辨率(度/格)
 
 # ============ 后雷达 (rear) ============
 range_image_segmentation_rear:
   ros__parameters:
     lidar_name: "rear"
     input_topic: "/rear/rslidar_points_leveled"
-    ground_topic: "/rear/ground_cloud"
-    segmented_topic: "/rear/segmented_cloud_pure"
-    boxs_topic: "/rear/box/cluster/range_image"
-    marker_topic: "/rear/box/cluster/range_image/marker"
+    edge_cloud_topic: "/rear/ditch_cloud"
+    edge_line_topic: "/rear/ditch_line"
+    frame_id: "rear_rslidar"
 
-    num_vertical_scans: 144
-    num_horizontal_scans: 180
-    vertical_angle_bottom: -75.0
-    vertical_angle_top: 15.0
-    horizontal_fov: 120.0
+    # ---- 边坡告警（本实例的原始告警，由 perception_common 的 warning_fusion 合并发布契约话题）----
+    # 分档阈值 edge_danger_dist / edge_caution_dist 见 perception_common/config/params.yaml 的 /** 共享段（唯一真源）
+    edge_warning_raw_topic: "/range_image_segmentation_rear/edge_warning_raw"
+    edge_heartbeat_hz: 10.0    # 心跳频率（契约 §4.3 必须 ≥5Hz，建议 10Hz）
+    edge_timeout_s: 0.5        # 点云断流超过该时长 → 输出安全默认值（§3.3）
+
+    # ---- 定向检测门控（契约 §3.1/§6.2）----
+    motion_gate_enable: true
+    motion_cmd_topic: "/control/cmd_gate/cmd_vel"
+    motion_v_thresh: 0.05
+    motion_w_thresh: 0.05
+    motion_timeout_s: 0.5
+
+    max_range: 12.0
     min_range: 0.2
+    gap_thresh: 1.0
+    edge_max_range: 10.0
+    outlier_mean_k: 6
+    outlier_std_mul: 1.0
 
-    ground_scan_index: 100
-    sensor_mount_angle: 0.0
-    ground_angle_threshold: 10.0
-    ground_z_threshold: -1.1
-
-    segment_theta: 60.0
-    segment_valid_point_num: 5
-    segment_valid_line_num: 3
-    min_cluster_size: 30
+    horizontal_angle_min: -60.0
+    horizontal_angle_max: 60.0
+    horizontal_res: 1.0
+    vertical_angle_min: -45.0
+    vertical_angle_max: 0.0
+    vertical_res: 1.0

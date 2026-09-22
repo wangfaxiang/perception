@@ -113,7 +113,7 @@ ros2 launch cluster cluster.launch.py                          # 聚类 ×2 + �
 ros2 launch perception_common warning_fusion.launch.py
 
 ---------------------------------------------------------------------------------------------
-## 聚类方法2
+## 边坡/悬崖检测算法2
 ros2 launch range_image_segmentation range_image_segmentation.launch.py
 
 ----------------------------------------------------------------------------------------------

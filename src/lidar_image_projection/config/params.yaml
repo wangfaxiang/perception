@@ -16,14 +16,16 @@ lidar_image_projection_front:
     # 雷达标识
     lidar_name: "front"
 
-    # 输入点云话题
-    input_topic: "/front/rslidar_points"
+    # 输入点云话题（与 pothole_detection 一致，使用 level 后的点云）
+    input_topic: "/front/rslidar_points_leveled"
 
     # 输出图像话题
     height_image_topic: "/front/lidar_height_image"
     dilated_height_image_topic: "/front/lidar_dilated_height_image"
     edge_image_topic: "/front/lidar_edge_image"
-    edge_cloud_topic: "/front/lidar_edge_cloud"
+    # 边坡边缘输出（与 pothole_detection 的 ditch_cloud / ditch_line 一致，rviz 无需改动）
+    edge_cloud_topic: "/front/ditch_cloud"
+    edge_line_topic: "/front/ditch_line"
 
     # 坐标系
     frame_id: "front_rslidar"
@@ -68,14 +70,16 @@ lidar_image_projection_rear:
     # 雷达标识
     lidar_name: "rear"
 
-    # 输入点云话题
-    input_topic: "/rear/rslidar_points"
+    # 输入点云话题（与 pothole_detection 一致，使用 level 后的点云）
+    input_topic: "/rear/rslidar_points_leveled"
 
     # 输出图像话题
     height_image_topic: "/rear/lidar_height_image"
     dilated_height_image_topic: "/rear/lidar_dilated_height_image"
     edge_image_topic: "/rear/lidar_edge_image"
-    edge_cloud_topic: "/rear/lidar_edge_cloud"
+    # 边坡边缘输出（与 pothole_detection 的 ditch_cloud / ditch_line 一致，rviz 无需改动）
+    edge_cloud_topic: "/rear/ditch_cloud"
+    edge_line_topic: "/rear/ditch_line"
 
     # 坐标系
     frame_id: "rear_rslidar"

@@ -27,7 +27,7 @@
             "environment": [
                 {
                     "name": "LD_LIBRARY_PATH",
-                    "value": "${workspaceFolder}/install/pothole_detection/lib:${workspaceFolder}/install/dth_messages/lib:${workspaceFolder}/install/rslidar_msg/lib:${env:LD_LIBRARY_PATH}"
+                    "value": "/opt/ros/humble/lib:${workspaceFolder}/install/pothole_detection/lib:${workspaceFolder}/install/dth_messages/lib:${workspaceFolder}/install/rslidar_msg/lib:${env:LD_LIBRARY_PATH}"
                 }
             ],
             "MIMode": "gdb",
@@ -64,7 +64,7 @@
             "environment": [
                 {
                     "name": "LD_LIBRARY_PATH",
-                    "value": "${workspaceFolder}/install/pothole_detection/lib:${workspaceFolder}/install/dth_messages/lib:${workspaceFolder}/install/rslidar_msg/lib:${env:LD_LIBRARY_PATH}"
+                    "value": "/opt/ros/humble/lib:${workspaceFolder}/install/pothole_detection/lib:${workspaceFolder}/install/dth_messages/lib:${workspaceFolder}/install/rslidar_msg/lib:${env:LD_LIBRARY_PATH}"
                 }
             ],
             "MIMode": "gdb",
@@ -91,12 +91,12 @@
                 "--params-file", "${workspaceFolder}/install/perception_common/share/perception_common/config/params.yaml",
                 "-r", "__node:=debug_warning_fusion",
                 // 调试态默认只接调试实例（不碰契约话题 /perception/*）：
-                // 与 “Debug pothole 前后雷达 + 融合” / “Debug cluster 前后雷达” 组合调试时直接可用；
+                // 边坡接 range_image_segmentation 调试实例，障碍接 cluster 调试实例；
                 // 接真实检测实例（生产命名）时改为:
-                //   /pothole_detection_front/edge_warning_raw, /pothole_detection_rear/edge_warning_raw
-                //   /cluster_front/obstacle_warning_raw,        /cluster_rear/obstacle_warning_raw
-                "-p", "front_edge_topic:=/debug_pothole_det_front/edge_warning_raw",
-                "-p", "rear_edge_topic:=/debug_pothole_det_rear/edge_warning_raw",
+                //   /range_image_segmentation_front/edge_warning_raw, /range_image_segmentation_rear/edge_warning_raw
+                //   /cluster_front/obstacle_warning_raw,              /cluster_rear/obstacle_warning_raw
+                "-p", "front_edge_topic:=/debug_range_image_seg_front/edge_warning_raw",
+                "-p", "rear_edge_topic:=/debug_range_image_seg_rear/edge_warning_raw",
                 "-p", "front_obstacle_topic:=/debug_cluster_front/obstacle_warning_raw",
                 "-p", "rear_obstacle_topic:=/debug_cluster_rear/obstacle_warning_raw",
                 "-p", "edge_warning_topic:=/debug/edge_warning",
@@ -108,7 +108,7 @@
             "environment": [
                 {
                     "name": "LD_LIBRARY_PATH",
-                    "value": "${workspaceFolder}/install/perception_common/lib:${workspaceFolder}/install/dth_messages/lib:${env:LD_LIBRARY_PATH}"
+                    "value": "/opt/ros/humble/lib:${workspaceFolder}/install/perception_common/lib:${workspaceFolder}/install/dth_messages/lib:${env:LD_LIBRARY_PATH}"
                 }
             ],
             "MIMode": "gdb",
@@ -142,7 +142,7 @@
             "environment": [
                 {
                     "name": "LD_LIBRARY_PATH",
-                    "value": "${workspaceFolder}/install/lidar_image_projection/lib:${workspaceFolder}/install/rslidar_msg/lib:${env:LD_LIBRARY_PATH}"
+                    "value": "/opt/ros/humble/lib:${workspaceFolder}/install/lidar_image_projection/lib:${workspaceFolder}/install/rslidar_msg/lib:${env:LD_LIBRARY_PATH}"
                 }
             ],
             "MIMode": "gdb",
@@ -176,7 +176,7 @@
             "environment": [
                 {
                     "name": "LD_LIBRARY_PATH",
-                    "value": "${workspaceFolder}/install/lidar_image_projection/lib:${workspaceFolder}/install/rslidar_msg/lib:${env:LD_LIBRARY_PATH}"
+                    "value": "/opt/ros/humble/lib:${workspaceFolder}/install/lidar_image_projection/lib:${workspaceFolder}/install/rslidar_msg/lib:${env:LD_LIBRARY_PATH}"
                 }
             ],
             "MIMode": "gdb",
@@ -209,7 +209,7 @@
             "environment": [
                 {
                     "name": "LD_LIBRARY_PATH",
-                    "value": "${workspaceFolder}/install/lidar_centerpoint/lib:${workspaceFolder}/install/box_msg/lib:/home/promote/wfx/tools/TensorRT/TensorRT-8.6.0.12/lib:/usr/local/cuda-11.8/lib64:${env:LD_LIBRARY_PATH}"
+                    "value": "/opt/ros/humble/lib:${workspaceFolder}/install/lidar_centerpoint/lib:${workspaceFolder}/install/box_msg/lib:/home/promote/wfx/tools/TensorRT/TensorRT-8.6.0.12/lib:/usr/local/cuda-11.8/lib64:${env:LD_LIBRARY_PATH}"
                 }
             ],
             "MIMode": "gdb",
@@ -236,7 +236,7 @@
             "environment": [
                 {
                     "name": "LD_LIBRARY_PATH",
-                    "value": "${workspaceFolder}/install/centerpoint/lib:${workspaceFolder}/install/box_msg/lib:/home/promote/wfx/tools/TensorRT/TensorRT-8.6.0.12/lib:/usr/local/cuda-11.8/lib64:${env:LD_LIBRARY_PATH}"
+                    "value": "/opt/ros/humble/lib:${workspaceFolder}/install/centerpoint/lib:${workspaceFolder}/install/box_msg/lib:/home/promote/wfx/tools/TensorRT/TensorRT-8.6.0.12/lib:/usr/local/cuda-11.8/lib64:${env:LD_LIBRARY_PATH}"
                 }
             ],
             "MIMode": "gdb",
@@ -274,7 +274,7 @@
             "environment": [
                 {
                     "name": "LD_LIBRARY_PATH",
-                    "value": "${workspaceFolder}/install/ground_segmentation/lib:${env:LD_LIBRARY_PATH}"
+                    "value": "/opt/ros/humble/lib:${workspaceFolder}/install/ground_segmentation/lib:${env:LD_LIBRARY_PATH}"
                 }
             ],
             "MIMode": "gdb",
@@ -307,7 +307,7 @@
             "environment": [
                 {
                     "name": "LD_LIBRARY_PATH",
-                    "value": "${workspaceFolder}/install/ground_segmentation/lib:${env:LD_LIBRARY_PATH}"
+                    "value": "/opt/ros/humble/lib:${workspaceFolder}/install/ground_segmentation/lib:${env:LD_LIBRARY_PATH}"
                 }
             ],
             "MIMode": "gdb",
@@ -335,7 +335,7 @@
             "environment": [
                 {
                     "name": "LD_LIBRARY_PATH",
-                    "value": "${workspaceFolder}/install/ground_segmentation/lib:${env:LD_LIBRARY_PATH}"
+                    "value": "/opt/ros/humble/lib:${workspaceFolder}/install/ground_segmentation/lib:${env:LD_LIBRARY_PATH}"
                 }
             ],
             "MIMode": "gdb",
@@ -363,7 +363,7 @@
             "environment": [
                 {
                     "name": "LD_LIBRARY_PATH",
-                    "value": "${workspaceFolder}/install/ground_segmentation/lib:${env:LD_LIBRARY_PATH}"
+                    "value": "/opt/ros/humble/lib:${workspaceFolder}/install/ground_segmentation/lib:${env:LD_LIBRARY_PATH}"
                 }
             ],
             "MIMode": "gdb",
@@ -405,7 +405,7 @@
             "environment": [
                 {
                     "name": "LD_LIBRARY_PATH",
-                    "value": "${workspaceFolder}/install/cluster/lib:${workspaceFolder}/install/box_msg/lib:${workspaceFolder}/install/dth_messages/lib:${env:LD_LIBRARY_PATH}"
+                    "value": "/opt/ros/humble/lib:${workspaceFolder}/install/cluster/lib:${workspaceFolder}/install/box_msg/lib:${workspaceFolder}/install/dth_messages/lib:${env:LD_LIBRARY_PATH}"
                 }
             ],
             "MIMode": "gdb",
@@ -441,7 +441,7 @@
             "environment": [
                 {
                     "name": "LD_LIBRARY_PATH",
-                    "value": "${workspaceFolder}/install/cluster/lib:${workspaceFolder}/install/box_msg/lib:${workspaceFolder}/install/dth_messages/lib:${env:LD_LIBRARY_PATH}"
+                    "value": "/opt/ros/humble/lib:${workspaceFolder}/install/cluster/lib:${workspaceFolder}/install/box_msg/lib:${workspaceFolder}/install/dth_messages/lib:${env:LD_LIBRARY_PATH}"
                 }
             ],
             "MIMode": "gdb",
@@ -472,7 +472,7 @@
             "environment": [
                 {
                     "name": "LD_LIBRARY_PATH",
-                    "value": "${workspaceFolder}/install/lidar_leveling/lib:${env:LD_LIBRARY_PATH}"
+                    "value": "/opt/ros/humble/lib:${workspaceFolder}/install/lidar_leveling/lib:${env:LD_LIBRARY_PATH}"
                 }
             ],
             "MIMode": "gdb",
@@ -503,7 +503,7 @@
             "environment": [
                 {
                     "name": "LD_LIBRARY_PATH",
-                    "value": "${workspaceFolder}/install/lidar_leveling/lib:${env:LD_LIBRARY_PATH}"
+                    "value": "/opt/ros/humble/lib:${workspaceFolder}/install/lidar_leveling/lib:${env:LD_LIBRARY_PATH}"
                 }
             ],
             "MIMode": "gdb",
@@ -525,17 +525,28 @@
             "args": [
                 "--ros-args",
                 "-r", "__node:=debug_range_image_seg_front",
+                // 共享阈值（edge_danger_dist / edge_caution_dist 无代码默认值）只能来自参数文件的
+                // /** 共享段；本节点名被改为 debug_range_image_seg_front，故文件里的节点专属段不生效
+                "--params-file", "${workspaceFolder}/install/perception_common/share/perception_common/config/params.yaml",
                 "-p", "lidar_name:=front",
-                "-p", "ground_scan_index:=100",
-                "-p", "ground_z_threshold:=-1.1",
-                "-p", "segment_theta:=60.0",
-                "-p", "min_cluster_size:=30"
+                "-p", "max_range:=12.0",
+                "-p", "min_range:=0.2",
+                "-p", "gap_thresh:=1.0",
+                "-p", "edge_max_range:=10.0",
+                "-p", "outlier_mean_k:=6",
+                "-p", "outlier_std_mul:=1.0",
+                "-p", "horizontal_angle_min:=-60.0",
+                "-p", "horizontal_angle_max:=60.0",
+                "-p", "horizontal_res:=1.0",
+                "-p", "vertical_angle_min:=-45.0",
+                "-p", "vertical_angle_max:=0.0",
+                "-p", "vertical_res:=1.0"
             ],
             "cwd": "${workspaceFolder}",
             "environment": [
                 {
                     "name": "LD_LIBRARY_PATH",
-                    "value": "${workspaceFolder}/install/range_image_segmentation/lib:${workspaceFolder}/install/box_msg/lib:${env:LD_LIBRARY_PATH}"
+                    "value": "/opt/ros/humble/lib:${workspaceFolder}/install/range_image_segmentation/lib:${workspaceFolder}/install/dth_messages/lib:${env:LD_LIBRARY_PATH}"
                 }
             ],
             "MIMode": "gdb",
@@ -557,17 +568,28 @@
             "args": [
                 "--ros-args",
                 "-r", "__node:=debug_range_image_seg_rear",
+                // 共享阈值（edge_danger_dist / edge_caution_dist 无代码默认值）只能来自参数文件的
+                // /** 共享段；本节点名被改为 debug_range_image_seg_rear，故文件里的节点专属段不生效
+                "--params-file", "${workspaceFolder}/install/perception_common/share/perception_common/config/params.yaml",
                 "-p", "lidar_name:=rear",
-                "-p", "ground_scan_index:=100",
-                "-p", "ground_z_threshold:=-1.1",
-                "-p", "segment_theta:=60.0",
-                "-p", "min_cluster_size:=30"
+                "-p", "max_range:=12.0",
+                "-p", "min_range:=0.2",
+                "-p", "gap_thresh:=1.0",
+                "-p", "edge_max_range:=10.0",
+                "-p", "outlier_mean_k:=6",
+                "-p", "outlier_std_mul:=1.0",
+                "-p", "horizontal_angle_min:=-60.0",
+                "-p", "horizontal_angle_max:=60.0",
+                "-p", "horizontal_res:=1.0",
+                "-p", "vertical_angle_min:=-45.0",
+                "-p", "vertical_angle_max:=0.0",
+                "-p", "vertical_res:=1.0"
             ],
             "cwd": "${workspaceFolder}",
             "environment": [
                 {
                     "name": "LD_LIBRARY_PATH",
-                    "value": "${workspaceFolder}/install/range_image_segmentation/lib:${workspaceFolder}/install/box_msg/lib:${env:LD_LIBRARY_PATH}"
+                    "value": "/opt/ros/humble/lib:${workspaceFolder}/install/range_image_segmentation/lib:${workspaceFolder}/install/dth_messages/lib:${env:LD_LIBRARY_PATH}"
                 }
             ],
             "MIMode": "gdb",
@@ -594,10 +616,10 @@
         {
             "name": "Debug 感知告警全链路 (pothole×2 + cluster×2 + fusion)",
             "configurations": [
-                "Debug pothole_detection_front (launch)",
-                "Debug pothole_detection_rear (launch)",
+                // "Debug range_image_segmentation_front (launch)",
+                // "Debug range_image_segmentation_rear (launch)",
                 "Debug cluster_front (launch)",
-                "Debug cluster_rear (launch)",
+                // "Debug cluster_rear (launch)",
                 "Debug warning_fusion (launch)"
             ],
             "stopAll": true

@@ -12,8 +12,11 @@
   <depend>rclcpp</depend>
   <depend>sensor_msgs</depend>
   <depend>visualization_msgs</depend>
-  <depend>box_msg</depend>
+  <depend>geometry_msgs</depend>
   <depend>pcl_conversions</depend>
+  <depend>dth_messages</depend>
+  <!-- 运行期：launch 需解析 perception_common 共享参数 share 目录；源码用其 motion_state.hpp -->
+  <depend>perception_common</depend>
 
   <test_depend>ament_lint_auto</test_depend>
   <test_depend>ament_lint_common</test_depend>

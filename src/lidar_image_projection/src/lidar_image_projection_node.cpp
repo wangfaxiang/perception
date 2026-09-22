@@ -18,6 +18,9 @@
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/point_cloud2.hpp>
 #include <sensor_msgs/msg/image.hpp>
+#include <visualization_msgs/msg/marker.hpp>
+#include <visualization_msgs/msg/marker_array.hpp>
+#include <geometry_msgs/msg/point.hpp>
 #include <cv_bridge/cv_bridge.h>
 #include <opencv2/opencv.hpp>
 #include <pcl_conversions/pcl_conversions.h>
@@ -50,11 +53,12 @@ public:
 
     // 话题前缀: front → /front/xxx; rear → /rear/xxx; 空 → /xxx（保持单雷达兼容）
     const std::string topic_prefix = lidar_name.empty() ? "" : ("/" + lidar_name);
-    const std::string default_input_topic      = topic_prefix + "/rslidar_points";
+    const std::string default_input_topic      = topic_prefix + "/rslidar_points_leveled";
     const std::string default_height_topic     = topic_prefix + "/lidar_height_image";
     const std::string default_dilated_topic    = topic_prefix + "/lidar_dilated_height_image";
     const std::string default_edge_topic       = topic_prefix + "/lidar_edge_image";
-    const std::string default_edge_cloud_topic = topic_prefix + "/lidar_edge_cloud";
+    const std::string default_edge_cloud_topic = topic_prefix + "/ditch_cloud";
+    const std::string default_edge_line_topic  = topic_prefix + "/ditch_line";
     const std::string default_frame_id         = lidar_name.empty() ? "rslidar" : (lidar_name + "_rslidar");
 
     // 声明参数（话题名默认由 lidar_name 推导，也可在参数文件中显式覆盖）
@@ -85,8 +89,10 @@ public:
     this->declare_parameter("voxel_leaf_size", 0.03); // 体素栅格边长（米），0=禁用
 
     // 边缘检测参数（防矿卡坠坡）
+    // 输出话题与 pothole_detection 保持一致（ditch_cloud / ditch_line），rviz 无需改动
     this->declare_parameter<std::string>("edge_image_topic", default_edge_topic);       // 边缘图像话题
-    this->declare_parameter<std::string>("edge_cloud_topic", default_edge_cloud_topic); // 边缘点云话题
+    this->declare_parameter<std::string>("edge_cloud_topic", default_edge_cloud_topic); // 边坡边缘点云话题（=ditch_cloud）
+    this->declare_parameter<std::string>("edge_line_topic", default_edge_line_topic);   // 边坡边缘折线话题（=ditch_line）
     this->declare_parameter("enable_edge_detection", true);           // 是否启用边缘检测
     this->declare_parameter("canny_low_thresh", 120);                 // Canny 低阈值
     this->declare_parameter("canny_high_thresh", 300);                // Canny 高阈值
@@ -96,12 +102,13 @@ public:
     this->declare_parameter("save_dir", "./"); // 图片保存目录（当前目录）
 
     // 读取参数
-    std::string input_topic, height_topic, dilated_height_topic, edge_topic, edge_cloud_topic;
+    std::string input_topic, height_topic, dilated_height_topic, edge_topic, edge_cloud_topic, edge_line_topic;
     this->get_parameter("input_topic", input_topic);
     this->get_parameter("height_image_topic", height_topic);
     this->get_parameter("dilated_height_image_topic", dilated_height_topic);
     this->get_parameter("edge_image_topic", edge_topic);
     this->get_parameter("edge_cloud_topic", edge_cloud_topic);
+    this->get_parameter("edge_line_topic", edge_line_topic);
     this->get_parameter("frame_id", frame_id_);
 
     this->get_parameter("horiz_fov_deg", horiz_fov_deg_);
@@ -153,6 +160,8 @@ public:
           edge_topic, 10);
       pub_edge_cloud_ = this->create_publisher<sensor_msgs::msg::PointCloud2>(
           edge_cloud_topic, 10);
+      pub_edge_line_ = this->create_publisher<visualization_msgs::msg::MarkerArray>(
+          edge_line_topic, 10);
     }
     else
     {
@@ -577,6 +586,28 @@ private:
         edge_cloud_msg.header.frame_id = frame_id_;
         pub_edge_cloud_->publish(edge_cloud_msg);
       }
+
+      // 发布边缘折线（与 pothole_detection 的 ditch_line 一致：红色折线 + 黄色主方向轴）
+      visualization_msgs::msg::MarkerArray lines;
+      if (edge_cloud.empty())
+      {
+        // 无边坡时清除所有旧线，避免刷新残留
+        visualization_msgs::msg::Marker clear;
+        clear.action = visualization_msgs::msg::Marker::DELETEALL;
+        lines.markers.push_back(clear);
+      }
+      else
+      {
+        // 折线按水平角升序（-60°→+60°）连线，避免跨整幅图的乱线
+        std::vector<pcl::PointXYZI> sorted(edge_cloud.points.begin(), edge_cloud.points.end());
+        std::sort(sorted.begin(), sorted.end(),
+                  [](const pcl::PointXYZI &a, const pcl::PointXYZI &b) {
+                    return std::atan2(a.y, a.x) < std::atan2(b.y, b.x);
+                  });
+        lines.markers.push_back(lineMarker(sorted, "ditch", 0, 1.0f, 0.0f, 0.0f, 0.1f, timestamp));
+        lines.markers.push_back(axisMarker(sorted, "ditch_axis", 1, 1.0f, 1.0f, 0.0f, timestamp));
+      }
+      pub_edge_line_->publish(lines);
     }
     // ===== 边缘检测 END =====
 
@@ -622,12 +653,121 @@ private:
     }
   }
 
+  visualization_msgs::msg::Marker lineMarker(const std::vector<pcl::PointXYZI> &pts,
+                                             const std::string &ns, int id,
+                                             float r, float g, float b, float width,
+                                             const rclcpp::Time &stamp) const
+  {
+    visualization_msgs::msg::Marker m;
+    m.header.stamp = stamp;
+    m.header.frame_id = frame_id_;
+    m.ns = ns;
+    m.id = id;
+    m.type = visualization_msgs::msg::Marker::LINE_STRIP;
+    m.action = visualization_msgs::msg::Marker::ADD;
+    m.scale.x = width;
+    m.color.r = r;
+    m.color.g = g;
+    m.color.b = b;
+    m.color.a = 1.0f;
+    m.lifetime = rclcpp::Duration::from_seconds(0.5);  // 自动过期，避免残留
+    for (const auto &pt : pts)
+    {
+      geometry_msgs::msg::Point p;
+      p.x = pt.x;
+      p.y = pt.y;
+      p.z = pt.z;
+      m.points.push_back(p);
+    }
+    return m;
+  }
+
+  visualization_msgs::msg::Marker axisMarker(const std::vector<pcl::PointXYZI> &pts,
+                                             const std::string &ns, int id,
+                                             float r, float g, float b,
+                                             const rclcpp::Time &stamp)
+  {
+    // PCA 估计边界主方向（2D: x-y 平面）
+    const size_t n = pts.size();
+    double mx = 0.0, my = 0.0, mz = 0.0;
+    for (const auto &pt : pts)
+    {
+      mx += pt.x;
+      my += pt.y;
+      mz += pt.z;
+    }
+    mx /= n; my /= n; mz /= n;
+
+    double cxx = 0.0, cyy = 0.0, cxy = 0.0;
+    for (const auto &pt : pts)
+    {
+      const double dx = pt.x - mx;
+      const double dy = pt.y - my;
+      cxx += dx * dx;
+      cyy += dy * dy;
+      cxy += dx * dy;
+    }
+
+    // 2x2 协方差矩阵 [[cxx, cxy],[cxy, cyy]] 的最大特征值与对应特征向量（主方向）
+    const double tr = cxx + cyy;
+    const double det = cxx * cyy - cxy * cxy;
+    const double lambda_max = 0.5 * (tr + std::sqrt(std::max(0.0, tr * tr - 4.0 * det)));
+
+    double ux = cxy;
+    double uy = lambda_max - cxx;
+    const double alt_norm = (lambda_max - cyy) * (lambda_max - cyy) + cxy * cxy;
+    if (ux * ux + uy * uy < alt_norm)
+    {
+      ux = lambda_max - cyy;
+      uy = cxy;
+    }
+    const double norm = std::hypot(ux, uy);
+    if (norm > 1e-9) { ux /= norm; uy /= norm; }
+    else { ux = 1.0; uy = 0.0; }
+
+    // 沿主方向的均方差作为线段半长
+    double var = 0.0;
+    for (const auto &pt : pts)
+    {
+      const double proj = (pt.x - mx) * ux + (pt.y - my) * uy;
+      var += proj * proj;
+    }
+    const double half_len = 1.5 * std::sqrt(var / n);  // 主方向线适当加长
+
+    visualization_msgs::msg::Marker m;
+    m.header.stamp = stamp;
+    m.header.frame_id = frame_id_;
+    m.ns = ns;
+    m.id = id;
+    m.type = visualization_msgs::msg::Marker::LINE_STRIP;
+    m.action = visualization_msgs::msg::Marker::ADD;
+    m.scale.x = 0.08;  // 线宽（米）
+    m.color.r = r;
+    m.color.g = g;
+    m.color.b = b;
+    m.color.a = 1.0f;
+    m.lifetime = rclcpp::Duration::from_seconds(0.5);
+
+    geometry_msgs::msg::Point pa, pb;
+    pa.x = mx - half_len * ux;
+    pa.y = my - half_len * uy;
+    pa.z = mz;
+    pb.x = mx + half_len * ux;
+    pb.y = my + half_len * uy;
+    pb.z = mz;
+    m.points.push_back(pa);
+    m.points.push_back(pb);
+
+    return m;
+  }
+
   // 订阅和发布
   rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr sub_cloud_;
   rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr pub_height_img_;         // 原始高度图
   rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr pub_dilated_height_img_; // 膨胀后高度图
   rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr pub_edge_img_;           // 带边缘叠加的高度图
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pub_edge_cloud_;   // 边缘点云
+  rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr pub_edge_line_; // 边缘折线
 
   // 参数
   std::string frame_id_;

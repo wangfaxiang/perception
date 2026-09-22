@@ -1,7 +1,7 @@
 # 感知侧共用参数（perception_common）
 #
 # 本文件被【所有】感知节点加载（launch 里 parameters=[本文件, 各包自己的 params.yaml]）:
-#   - pothole_detection 前后检测实例（边坡）→ 吃 /** 段的边坡分档阈值
+#   - range_image_segmentation 前后检测实例（边坡）→ 吃 /** 段的边坡分档阈值
 #   - cluster 前后检测实例（障碍物）      → 吃 /** 段的障碍物上报距离
 #   - warning_fusion（本包融合节点）      → 吃 /** 段的两个急停阈值 + warning_fusion 段
 # 未声明的键对节点无影响（ROS 2 会忽略同名节点段以外的参数）。
@@ -11,7 +11,7 @@
 # 代码里不保留默认值（未提供则该节点启动即失败），避免代码与参数文件分叉。
 /**:
   ros__parameters:
-    # ---- 边坡（pothole_detection）----
+    # ---- 边坡（range_image_segmentation）----
     edge_danger_dist: 5.0       # 最近边界距离 < 该值 → DANGER（并联动 /perception/stop_command）
     edge_caution_dist: 10.0     # 最近边界距离 ≤ 该值 → CAUTION（仅告警，不联动急停）
 
@@ -21,8 +21,8 @@
 
 # ============ 共用融合节点（契约三话题唯一发布者）============
 # 订阅两类检测实例的单雷达原始告警:
-#   边坡 /pothole_detection_{front,rear}/edge_warning_raw     (EdgeWarning)
-#   障碍 /cluster_{front,rear}/obstacle_warning_raw           (ObstacleWarning)
+#   边坡 /range_image_segmentation_{front,rear}/edge_warning_raw  (EdgeWarning)
+#   障碍 /cluster_{front,rear}/obstacle_warning_raw               (ObstacleWarning)
 # 周期发布（默认 10Hz，契约 §4.3 必须 ≥5Hz）:
 #   /perception/edge_warning     取等级更高的一路（同级取距离更近）
 #   /perception/obstacle_warning 类别优先（人员 > 车辆 > 其他），同级取最近
@@ -35,8 +35,8 @@ warning_fusion:
     stop_command_topic: "/perception/stop_command"
 
     # ---- 原始告警来源（检测节点私有名空间，见各包 launch 的节点名）----
-    front_edge_topic: "/pothole_detection_front/edge_warning_raw"
-    rear_edge_topic: "/pothole_detection_rear/edge_warning_raw"
+    front_edge_topic: "/range_image_segmentation_front/edge_warning_raw"
+    rear_edge_topic: "/range_image_segmentation_rear/edge_warning_raw"
     front_obstacle_topic: "/cluster_front/obstacle_warning_raw"
     rear_obstacle_topic: "/cluster_rear/obstacle_warning_raw"
 

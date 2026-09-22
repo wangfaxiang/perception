@@ -15,9 +15,12 @@ find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(visualization_msgs REQUIRED)
-find_package(box_msg REQUIRED)
+find_package(geometry_msgs REQUIRED)
 find_package(pcl_conversions REQUIRED)
-find_package(PCL REQUIRED COMPONENTS common)
+find_package(dth_messages REQUIRED)
+# 运行期依赖：launch 需解析 perception_common 共享参数 share 目录；源码用其 motion_state.hpp
+find_package(perception_common REQUIRED)
+find_package(PCL REQUIRED COMPONENTS common filters)
 
 include_directories(${PCL_INCLUDE_DIRS})
 
@@ -30,8 +33,10 @@ ament_target_dependencies(range_image_segmentation_node
   rclcpp
   sensor_msgs
   visualization_msgs
-  box_msg
+  geometry_msgs
   pcl_conversions
+  dth_messages
+  perception_common
 )
 
 target_link_libraries(range_image_segmentation_node

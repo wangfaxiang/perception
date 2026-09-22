@@ -331,20 +331,25 @@ box_msg::msg::Boxs Cluster::clustersToBoxs(
         {
             continue;
         }
-        if (density <= 120.0f && indices.indices.size() <= 500.0f)
+        if (density <= 100.0f && indices.indices.size() <= 500.0f)
         {
-            RCLCPP_INFO(this->get_logger(),
-                        "[cluster] points=%zu 包围盒垂直最高值 top_z=%.2f m, 密度=%.2f pts/m^2",
-                        indices.indices.size(), max_z, density);
+            // RCLCPP_INFO(this->get_logger(),
+            //             "[cluster] points=%zu 包围盒垂直最高值 top_z=%.2f m, 密度=%.2f pts/m^2",
+            //             indices.indices.size(), max_z, density);
             continue;
         }
         // 包围盒对角线长度
         const float diagonal = std::sqrt(boxs.w * boxs.w + boxs.l * boxs.l + boxs.h * boxs.h);
         // 包围盒相对于雷达坐标系的 x 最小值（雷达中心为原点）
         const float x_min = boxs.x - boxs.w / 2.0f;
+        // 包围盒最低点高度（地面 z≈0）
+        const float bottom_z = boxs.z - boxs.h / 2.0f;
 
         // 大臂只在正前方遮挡，只有前雷达需要过滤；后雷达无大臂，不进行该过滤
-        if (lidar_name == "front" && diagonal > 2.5f && x_min < 2.0f)
+        RCLCPP_INFO(this->get_logger(),
+                    "[cluster] 大臂过滤: diagonal=%.2f m, center_x=%.2f m, center_z=%.2f m, bottom_z=%.2f m",
+                    diagonal, boxs.x, boxs.z, bottom_z);
+        if ((lidar_name == "front") && (x_min < 2.0f) && (bottom_z > -0.6f))
         {
             // RCLCPP_INFO(this->get_logger(),
             //             "[cluster] 大臂过滤: diagonal=%.2f m, x_min=%.2f m",

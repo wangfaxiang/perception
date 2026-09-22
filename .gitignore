@@ -23,3 +23,9 @@ rosbag2_po_new_rear/metadata.yaml
 .vscode/browse*
 src/lidar_leveling/launch/__pycache__/*
 rosbag2_obstacle_front/metadata.yaml
+rosbag2_obstacle_rear/metadata.yaml
+.vscode/browse.vc.db-wal
+realdata_person/metadata.yaml
+hello.log
+src/range_image_segmentation/launch/__pycache__/range_image_segmentation.launch.cpython-310.pyc
+src/perception_common/launch/__pycache__/perception_bringup.launch.cpython-310.pyc

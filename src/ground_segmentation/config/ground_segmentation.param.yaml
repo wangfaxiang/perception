@@ -50,9 +50,9 @@ ransac_ground_filter_front:
     # voxel_size_x: 0.04
     # voxel_size_y: 0.04
     # voxel_size_z: 0.04
-    voxel_size_x: 0.20
-    voxel_size_y: 0.20
-    voxel_size_z: 0.20
+    voxel_size_x: 0.10
+    voxel_size_y: 0.10
+    voxel_size_z: 0.10
     height_threshold: 0.15
     max_range: 8.0
 
@@ -72,9 +72,9 @@ ransac_ground_filter_rear:
     # voxel_size_x: 0.04
     # voxel_size_y: 0.04
     # voxel_size_z: 0.04
-    voxel_size_x: 0.20
-    voxel_size_y: 0.20
-    voxel_size_z: 0.20
+    voxel_size_x: 0.10
+    voxel_size_y: 0.10
+    voxel_size_z: 0.10
     height_threshold: 0.15
     max_range: 8.0
 

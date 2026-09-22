@@ -6,7 +6,7 @@
        use_bag:=false  启动 rslidar_sdk 真实雷达驱动
        （两个 bag 里的话题名已是 /front/rslidar_points、/rear/rslidar_points，无需 remap）
   1) lidar_leveling       点云调平      /<side>/rslidar_points -> /<side>/rslidar_points_leveled
-  2) pothole_detection    边坡/沟壑检测  -> /<side>/ditch_cloud、/<side>/ditch_line
+  2) range_image_segmentation    边坡/沟壑检测  -> /<side>/ditch_cloud、/<side>/ditch_line
   3) ground_segmentation  地面点去除     -> /<side>/no_ground
   4) cluster              欧式聚类障碍物 -> /<side>/box/cluster/euclidean/marker
   5) warning_fusion       报警融合（/perception/{edge_warning,obstacle_warning,stop_command}
@@ -132,8 +132,8 @@ def _launch_setup(context):
     actions.append(LogInfo(msg='[bringup] 1/5 点云调平: lidar_leveling'))
     actions.append(_include('lidar_leveling', 'lidar_leveling.launch.py'))
 
-    actions.append(LogInfo(msg='[bringup] 2/5 边坡/沟壑检测: pothole_detection'))
-    actions.append(_include('pothole_detection', 'pothole_detection.launch.py'))
+    actions.append(LogInfo(msg='[bringup] 2/5 边坡/沟壑检测: range_image_segmentation'))
+    actions.append(_include('range_image_segmentation', 'range_image_segmentation.launch.py'))
 
     actions.append(LogInfo(msg='[bringup] 3/5 地面点去除: ground_segmentation'))
     actions.append(_include('ground_segmentation', 'ransac_ground_filter.launch.py'))

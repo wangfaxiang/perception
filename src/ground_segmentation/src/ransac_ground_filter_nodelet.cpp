@@ -350,10 +350,12 @@ void RANSACGroundFilterComponent::filter(
   const Eigen::Affine3d plane_affine = getPlaneAffine(*segment_ground_cloud_ptr, plane_normal);
   pcl::PointCloud<PointType>::Ptr no_ground_cloud_ptr(new pcl::PointCloud<PointType>);
 
-  // use not downsampled pointcloud for extract pointcloud that higher than height threshold
-  for (const auto & p : ranged_cloud->points) {
+  // 在降采样后的点云上提取高于高度阈值的非地面点（不再遍历全分辨率点云）：
+  // 输出规模与 RANSAC 输入一致，既省去逐点逆变换，也让下游聚类输入同步变小。
+  const Eigen::Affine3d plane_affine_inv = plane_affine.inverse();
+  for (const auto & p : downsampled_cloud->points) {
     const Eigen::Vector3d transformed_point =
-      plane_affine.inverse() * Eigen::Vector3d(p.x, p.y, p.z);
+      plane_affine_inv * Eigen::Vector3d(p.x, p.y, p.z);
     if (std::abs(transformed_point.z()) > height_threshold_) {
       no_ground_cloud_ptr->points.push_back(p);
     }
