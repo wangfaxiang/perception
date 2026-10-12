@@ -53,8 +53,12 @@ ransac_ground_filter_front:
     voxel_size_x: 0.10
     voxel_size_y: 0.10
     voxel_size_z: 0.10
+    # 距离自适应体素：边长 = voxel_size + adaptive_voxel_ratio * 水平距离，上限 adaptive_voxel_max_size
+    use_adaptive_voxel: true
+    adaptive_voxel_ratio: 0.015
+    adaptive_voxel_max_size: 0.4
     height_threshold: 0.15
-    max_range: 8.0
+    max_range: 10.0
 
 # ============ 后雷达 (rear) ============
 ransac_ground_filter_rear:
@@ -75,8 +79,12 @@ ransac_ground_filter_rear:
     voxel_size_x: 0.10
     voxel_size_y: 0.10
     voxel_size_z: 0.10
+    # 距离自适应体素：边长 = voxel_size + adaptive_voxel_ratio * 水平距离，上限 adaptive_voxel_max_size
+    use_adaptive_voxel: true
+    adaptive_voxel_ratio: 0.015
+    adaptive_voxel_max_size: 0.4
     height_threshold: 0.15
-    max_range: 8.0
+    max_range: 10.0
 
 # ============ Ray 地面滤波节点 (ray_ground_filter_node) ============
 ray_ground_filter:

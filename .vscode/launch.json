@@ -95,8 +95,8 @@
                 // 接真实检测实例（生产命名）时改为:
                 //   /range_image_segmentation_front/edge_warning_raw, /range_image_segmentation_rear/edge_warning_raw
                 //   /cluster_front/obstacle_warning_raw,              /cluster_rear/obstacle_warning_raw
-                "-p", "front_edge_topic:=/debug_range_image_seg_front/edge_warning_raw",
-                "-p", "rear_edge_topic:=/debug_range_image_seg_rear/edge_warning_raw",
+                "-p", "front_edge_topic:=/range_image_segmentation_front/edge_warning_raw",
+                "-p", "rear_edge_topic:=/range_image_segmentation_rear/edge_warning_raw",
                 "-p", "front_obstacle_topic:=/debug_cluster_front/obstacle_warning_raw",
                 "-p", "rear_obstacle_topic:=/debug_cluster_rear/obstacle_warning_raw",
                 "-p", "edge_warning_topic:=/debug/edge_warning",
@@ -524,29 +524,14 @@
             "program": "${workspaceFolder}/build/range_image_segmentation/range_image_segmentation_node",
             "args": [
                 "--ros-args",
-                "-r", "__node:=debug_range_image_seg_front",
-                // 共享阈值（edge_danger_dist / edge_caution_dist 无代码默认值）只能来自参数文件的
-                // /** 共享段；本节点名被改为 debug_range_image_seg_front，故文件里的节点专属段不生效
-                "--params-file", "${workspaceFolder}/install/perception_common/share/perception_common/config/params.yaml",
-                "-p", "lidar_name:=front",
-                "-p", "max_range:=12.0",
-                "-p", "min_range:=0.2",
-                "-p", "gap_thresh:=1.0",
-                "-p", "edge_max_range:=10.0",
-                "-p", "outlier_mean_k:=6",
-                "-p", "outlier_std_mul:=1.0",
-                "-p", "horizontal_angle_min:=-60.0",
-                "-p", "horizontal_angle_max:=60.0",
-                "-p", "horizontal_res:=1.0",
-                "-p", "vertical_angle_min:=-45.0",
-                "-p", "vertical_angle_max:=0.0",
-                "-p", "vertical_res:=1.0"
+                "-r", "__node:=range_image_segmentation_front",
+                "--params-file", "${workspaceFolder}/src/range_image_segmentation/config/params.yaml"
             ],
             "cwd": "${workspaceFolder}",
             "environment": [
                 {
                     "name": "LD_LIBRARY_PATH",
-                    "value": "/opt/ros/humble/lib:${workspaceFolder}/install/range_image_segmentation/lib:${workspaceFolder}/install/dth_messages/lib:${env:LD_LIBRARY_PATH}"
+                    "value": "/opt/ros/humble/lib:${workspaceFolder}/install/range_image_segmentation/lib:${workspaceFolder}/install/box_msg/lib:${workspaceFolder}/install/dth_messages/lib:${env:LD_LIBRARY_PATH}"
                 }
             ],
             "MIMode": "gdb",
@@ -567,29 +552,14 @@
             "program": "${workspaceFolder}/build/range_image_segmentation/range_image_segmentation_node",
             "args": [
                 "--ros-args",
-                "-r", "__node:=debug_range_image_seg_rear",
-                // 共享阈值（edge_danger_dist / edge_caution_dist 无代码默认值）只能来自参数文件的
-                // /** 共享段；本节点名被改为 debug_range_image_seg_rear，故文件里的节点专属段不生效
-                "--params-file", "${workspaceFolder}/install/perception_common/share/perception_common/config/params.yaml",
-                "-p", "lidar_name:=rear",
-                "-p", "max_range:=12.0",
-                "-p", "min_range:=0.2",
-                "-p", "gap_thresh:=1.0",
-                "-p", "edge_max_range:=10.0",
-                "-p", "outlier_mean_k:=6",
-                "-p", "outlier_std_mul:=1.0",
-                "-p", "horizontal_angle_min:=-60.0",
-                "-p", "horizontal_angle_max:=60.0",
-                "-p", "horizontal_res:=1.0",
-                "-p", "vertical_angle_min:=-45.0",
-                "-p", "vertical_angle_max:=0.0",
-                "-p", "vertical_res:=1.0"
+                "-r", "__node:=range_image_segmentation_rear",
+                "--params-file", "${workspaceFolder}/src/range_image_segmentation/config/params.yaml"
             ],
             "cwd": "${workspaceFolder}",
             "environment": [
                 {
                     "name": "LD_LIBRARY_PATH",
-                    "value": "/opt/ros/humble/lib:${workspaceFolder}/install/range_image_segmentation/lib:${workspaceFolder}/install/dth_messages/lib:${env:LD_LIBRARY_PATH}"
+                    "value": "/opt/ros/humble/lib:${workspaceFolder}/install/range_image_segmentation/lib:${workspaceFolder}/install/box_msg/lib:${workspaceFolder}/install/dth_messages/lib:${env:LD_LIBRARY_PATH}"
                 }
             ],
             "MIMode": "gdb",
@@ -616,7 +586,7 @@
         {
             "name": "Debug 感知告警全链路 (pothole×2 + cluster×2 + fusion)",
             "configurations": [
-                // "Debug range_image_segmentation_front (launch)",
+                "Debug range_image_segmentation_front (launch)",
                 // "Debug range_image_segmentation_rear (launch)",
                 "Debug cluster_front (launch)",
                 // "Debug cluster_rear (launch)",

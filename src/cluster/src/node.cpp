@@ -58,6 +58,13 @@ Cluster::Cluster() : rclcpp::Node("Cluster")
     this->declare_parameter<std::string>(
         "region_rowing_topic",
         lidar_name.empty() ? "/box/cluster/region_rowing" : (prefix + "/box/cluster/region_rowing"));
+    // 全量框话题（不过滤）：供下游（如边坡检测）过滤障碍物内的假边缘
+    this->declare_parameter<std::string>(
+        "euclidean_all_topic",
+        lidar_name.empty() ? "/box/cluster/euclidean_all" : (prefix + "/box/cluster/euclidean_all"));
+    this->declare_parameter<std::string>(
+        "region_rowing_all_topic",
+        lidar_name.empty() ? "/box/cluster/region_rowing_all" : (prefix + "/box/cluster/region_rowing_all"));
     this->declare_parameter<std::string>(
         "euclidean_marker_topic",
         lidar_name.empty() ? "/box/cluster/euclidean/marker" : (prefix + "/box/cluster/euclidean/marker"));
@@ -66,10 +73,13 @@ Cluster::Cluster() : rclcpp::Node("Cluster")
         lidar_name.empty() ? "/box/cluster/region_rowing/marker" : (prefix + "/box/cluster/region_rowing/marker"));
 
     std::string input_topic, euclidean_topic, region_rowing_topic;
+    std::string euclidean_all_topic, region_rowing_all_topic;
     std::string euclidean_marker_topic, region_rowing_marker_topic;
     this->get_parameter("input_topic", input_topic);
     this->get_parameter("euclidean_topic", euclidean_topic);
     this->get_parameter("region_rowing_topic", region_rowing_topic);
+    this->get_parameter("euclidean_all_topic", euclidean_all_topic);
+    this->get_parameter("region_rowing_all_topic", region_rowing_all_topic);
     this->get_parameter("euclidean_marker_topic", euclidean_marker_topic);
     this->get_parameter("region_rowing_marker_topic", region_rowing_marker_topic);
 
@@ -97,6 +107,8 @@ Cluster::Cluster() : rclcpp::Node("Cluster")
     pointsubscribe = this->create_subscription<sensor_msgs::msg::PointCloud2>(input_topic, 1,std::bind(&Cluster::onPointCloud, this, _1));
     publisher_cluster_euclidean = this->create_publisher<box_msg::msg::Boxs>(euclidean_topic, 1);
     publisher_cluster_region_rowing = this->create_publisher<box_msg::msg::Boxs>(region_rowing_topic, 1);
+    publisher_cluster_euclidean_all = this->create_publisher<box_msg::msg::Boxs>(euclidean_all_topic, 1);
+    publisher_cluster_region_rowing_all = this->create_publisher<box_msg::msg::Boxs>(region_rowing_all_topic, 1);
     publisher_cluster_euclidean_marker = this->create_publisher<visualization_msgs::msg::MarkerArray>(euclidean_marker_topic, 1);
     publisher_cluster_region_rowing_marker = this->create_publisher<visualization_msgs::msg::MarkerArray>(region_rowing_marker_topic, 1);
 
@@ -166,9 +178,10 @@ Cluster::Cluster() : rclcpp::Node("Cluster")
     subjson = this->create_subscription<std_msgs::msg::String>("/ui2ros", 1,std::bind(&Cluster::onSubjson, this, _1));
 
     RCLCPP_INFO(this->get_logger(),
-                "cluster started (lidar_name=%s): input=%s, euclidean=%s, region_rowing=%s",
+                "cluster started (lidar_name=%s): input=%s, euclidean=%s, region_rowing=%s, "
+                "euclidean_all=%s",
                 lidar_name.c_str(), input_topic.c_str(), euclidean_topic.c_str(),
-                region_rowing_topic.c_str());
+                region_rowing_topic.c_str(), euclidean_all_topic.c_str());
     RCLCPP_INFO(this->get_logger(),
                 "障碍物告警: %s (来源=%s, 强制类别=%s, warn_dist=%.1fm, heartbeat=%.1fHz, "
                 "timeout=%.2fs)",
@@ -264,6 +277,77 @@ visualization_msgs::msg::MarkerArray Cluster::boxsToMarkerArray(const box_msg::m
     return marker_array;
 }
 
+// 计算单个簇的包围盒与最近点摘要（纯几何计算，不含任何过滤；过滤逻辑在 clustersToBoxs 内）
+void Cluster::computeClusterBox(const pcl::PointIndices& indices,
+                                const pcl::PointCloud<pcl::PointXYZ>::ConstPtr& cloud,
+                                box_msg::msg::Box& boxs,
+                                BoxGeom& geom)
+{
+    bool first = true;
+    float min_x = 0.0f, min_y = 0.0f, min_z = 0.0f;
+    float max_x = 0.0f, max_y = 0.0f, max_z = 0.0f;
+    // 距离雷达最近的点（水平距离最小）—— 作为该簇的「威胁物位置」（契约 §5.3）
+    float near_x = 0.0f, near_y = 0.0f, near_z = 0.0f;
+    float near_dist = std::numeric_limits<float>::max();
+    for (const int index : indices.indices)
+    {
+        const pcl::PointXYZ& p = (*cloud)[index];
+        if (first)
+        {
+            min_x = max_x = p.x;
+            min_y = max_y = p.y;
+            min_z = max_z = p.z;
+            first = false;
+        }
+        else
+        {
+            min_x = std::min(min_x, p.x);
+            min_y = std::min(min_y, p.y);
+            min_z = std::min(min_z, p.z);
+            max_x = std::max(max_x, p.x);
+            max_y = std::max(max_y, p.y);
+            max_z = std::max(max_z, p.z);
+        }
+        const float d = std::hypot(p.x, p.y);
+        if (d < near_dist)
+        {
+            near_dist = d;
+            near_x = p.x;
+            near_y = p.y;
+            near_z = p.z;
+        }
+    }
+    boxs.x = (min_x + max_x) / 2.0f;
+    boxs.y = (min_y + max_y) / 2.0f;
+    boxs.z = (min_z + max_z) / 2.0f;
+    boxs.w = max_x - min_x;
+    boxs.l = max_y - min_y;
+    boxs.h = max_z - min_z;
+    boxs.rt = 0.0;
+    geom.near_x = near_x;
+    geom.near_y = near_y;
+    geom.near_z = near_z;
+    geom.near_dist = near_dist;
+    geom.points = indices.indices.size();
+}
+
+// 将全部聚类框转换成 Boxs（不做任何过滤）：供下游（如边坡检测）过滤障碍物内的假边缘使用
+box_msg::msg::Boxs Cluster::clustersToBoxsAll(
+    const std::vector<pcl::PointIndices>& cluster_indices,
+    const pcl::PointCloud<pcl::PointXYZ>::ConstPtr& cloud)
+{
+    box_msg::msg::Boxs boxarray;
+    for (const pcl::PointIndices& indices : cluster_indices)
+    {
+        if (indices.indices.empty()) continue;  // 空簇
+        box_msg::msg::Box boxs;
+        BoxGeom geom;  // 全量框不需要最近点，仅作为 helper 的输出占位
+        computeClusterBox(indices, cloud, boxs, geom);
+        boxarray.box.push_back(boxs);
+    }
+    return boxarray;
+}
+
 box_msg::msg::Boxs Cluster::clustersToBoxs(
     const std::vector<pcl::PointIndices>& cluster_indices,
     const pcl::PointCloud<pcl::PointXYZ>::ConstPtr& cloud,
@@ -273,49 +357,10 @@ box_msg::msg::Boxs Cluster::clustersToBoxs(
     if (geoms) geoms->clear();  // geoms 与 boxarray.box 同序一一对应（仅供内部挑最近威胁物用）
     for (const pcl::PointIndices& indices : cluster_indices)
     {
-        bool first = true;
-        float min_x = 0.0f, min_y = 0.0f, min_z = 0.0f;
-        float max_x = 0.0f, max_y = 0.0f, max_z = 0.0f;
-        // 距离雷达最近的点（水平距离最小）—— 作为该簇的「威胁物位置」（契约 §5.3）
-        float near_x = 0.0f, near_y = 0.0f, near_z = 0.0f;
-        float near_dist = std::numeric_limits<float>::max();
-        for (const int index : indices.indices)
-        {
-            const pcl::PointXYZ& p = (*cloud)[index];
-            if (first)
-            {
-                min_x = max_x = p.x;
-                min_y = max_y = p.y;
-                min_z = max_z = p.z;
-                first = false;
-            }
-            else
-            {
-                min_x = std::min(min_x, p.x);
-                min_y = std::min(min_y, p.y);
-                min_z = std::min(min_z, p.z);
-                max_x = std::max(max_x, p.x);
-                max_y = std::max(max_y, p.y);
-                max_z = std::max(max_z, p.z);
-            }
-            const float d = std::hypot(p.x, p.y);
-            if (d < near_dist)
-            {
-                near_dist = d;
-                near_x = p.x;
-                near_y = p.y;
-                near_z = p.z;
-            }
-        }
-        if (first) continue; // 空簇
+        if (indices.indices.empty()) continue;  // 空簇
         box_msg::msg::Box boxs;
-        boxs.x = (min_x + max_x) / 2.0f;
-        boxs.y = (min_y + max_y) / 2.0f;
-        boxs.z = (min_z + max_z) / 2.0f;
-        boxs.w = max_x - min_x;
-        boxs.l = max_y - min_y;
-        boxs.h = max_z - min_z;
-        boxs.rt = 0.0;
+        BoxGeom geom;
+        computeClusterBox(indices, cloud, boxs, geom);
 
         // 过滤掉中心点 z > 0 且水平距离在 2m ~ 4.0m 之间的目标（大臂）
         const float horizontal_dist = std::hypot(boxs.x, boxs.y);
@@ -325,7 +370,6 @@ box_msg::msg::Boxs Cluster::clustersToBoxs(
         const float density = (horizontal_area > 0.0f)
                                 ? static_cast<float>(indices.indices.size()) / horizontal_area
                                 : 0.0f;
-
 
         if (boxs.z > 0.0f && horizontal_dist >= 2.0f && horizontal_dist <= 4.0f)
         {
@@ -347,9 +391,9 @@ box_msg::msg::Boxs Cluster::clustersToBoxs(
 
         // 大臂只在正前方遮挡，只有前雷达需要过滤；后雷达无大臂，不进行该过滤
         RCLCPP_INFO(this->get_logger(),
-                    "[cluster] 大臂过滤: diagonal=%.2f m, center_x=%.2f m, center_z=%.2f m, bottom_z=%.2f m",
-                    diagonal, boxs.x, boxs.z, bottom_z);
-        if ((lidar_name == "front") && (x_min < 2.0f) && (bottom_z > -0.6f))
+                    "[cluster] 大臂过滤: diagonal=%.2f m, center_x=%.2f m, center_z=%.2f m, bottom_z=%.2f m, range=%.2f m",
+                    diagonal, boxs.x, boxs.z, bottom_z, horizontal_dist);
+        if ((lidar_name == "front") && (x_min < 2.0f) && ((bottom_z > -1.0f) || (diagonal >=3.0f)))
         {
             // RCLCPP_INFO(this->get_logger(),
             //             "[cluster] 大臂过滤: diagonal=%.2f m, x_min=%.2f m",
@@ -361,16 +405,10 @@ box_msg::msg::Boxs Cluster::clustersToBoxs(
             // RCLCPP_INFO(this->get_logger(),
             //             "[cluster] 小目标过滤: diagonal=%.2f m", diagonal);
             continue;
-        }        
+        }
         boxarray.box.push_back(boxs);
         if (geoms)
         {
-            BoxGeom geom;
-            geom.near_x = near_x;
-            geom.near_y = near_y;
-            geom.near_z = near_z;
-            geom.near_dist = near_dist;
-            geom.points = indices.indices.size();
             geoms->push_back(geom);
         }
     }
@@ -498,6 +536,11 @@ void Cluster::onPointCloud(const sensor_msgs::msg::PointCloud2::ConstSharedPtr i
             box_msg::msg::Boxs boxarray = clustersToBoxs(cluster_indices, cloud_filtered, &geoms);
             boxarray.header.stamp=this->get_clock() -> now();
             boxarray.header.frame_id = input_msg->header.frame_id;
+            // 全量框（不过滤）：供下游边坡检测过滤障碍物内的假边缘
+            box_msg::msg::Boxs boxarray_all = clustersToBoxsAll(cluster_indices, cloud_filtered);
+            boxarray_all.header.stamp = boxarray.header.stamp;
+            boxarray_all.header.frame_id = input_msg->header.frame_id;
+            publisher_cluster_region_rowing_all->publish(boxarray_all);
             // printBoxInfo(boxarray);
             publisher_cluster_region_rowing->publish(boxarray);
             publisher_cluster_region_rowing_marker->publish(boxsToMarkerArray(boxarray, input_msg->header.frame_id));
@@ -524,6 +567,11 @@ void Cluster::onPointCloud(const sensor_msgs::msg::PointCloud2::ConstSharedPtr i
             box_msg::msg::Boxs boxarray = clustersToBoxs(cluster_indices, cloud_filtered, &geoms);
             boxarray.header.stamp=this->get_clock() -> now();
             boxarray.header.frame_id = input_msg->header.frame_id;
+            // 全量框（不过滤）：供下游边坡检测过滤障碍物内的假边缘
+            box_msg::msg::Boxs boxarray_all = clustersToBoxsAll(cluster_indices, cloud_filtered);
+            boxarray_all.header.stamp = boxarray.header.stamp;
+            boxarray_all.header.frame_id = input_msg->header.frame_id;
+            publisher_cluster_euclidean_all->publish(boxarray_all);
             // RCLCPP_INFO(this->get_logger(), "-------------------------------------------------------");
             // printBoxInfo(boxarray);
             publisher_cluster_euclidean->publish(boxarray);
@@ -536,9 +584,10 @@ void Cluster::onPointCloud(const sensor_msgs::msg::PointCloud2::ConstSharedPtr i
     }
 }
 
-// ---- 障碍物告警（契约 §3.1/§5.3）：从已保留的包围盒中挑最近威胁物，发布单雷达原始告警 ----
-//   detected=true 时必须给合法类别（1/2/3）与自洽的 dist_m = √(x²+y²)；
-//   超出 obstacle_warn_dist 或无目标 → 安全默认值（type=0、坐标 0.0、dist=999.0）。
+// ---- 障碍物告警（契约 §3.1/§5.3）：从已保留的包围盒中挑最近目标，发布单雷达原始告警 ----
+//   检测到目标（best >= 0）即 detected=true + 合法类别（1/2/3）+ 自洽 dist_m = √(x²+y²)；
+//   「是否报警（obstacle_warn_dist）/ 是否报停（obstacle_danger_dist）」由 warning_fusion 判定，
+//   本实例只上报实际检测结果；无目标才发安全默认值（type=0、坐标 0.0、dist=999.0）。
 //   位置取簇内距雷达最近的点（而非包围盒中心）：对大体积/贴墙目标更保守。
 void Cluster::publishObstacleWarning(const box_msg::msg::Boxs& boxarray,
                                     const std::vector<BoxGeom>& geoms,
@@ -556,7 +605,7 @@ void Cluster::publishObstacleWarning(const box_msg::msg::Boxs& boxarray,
         }
     }
 
-    if (best >= 0 && best_dist <= static_cast<float>(obstacle_warn_dist_))
+    if (best >= 0)
     {
         const BoxGeom& geom = geoms[best];
         msg.detected = true;
@@ -566,12 +615,14 @@ void Cluster::publishObstacleWarning(const box_msg::msg::Boxs& boxarray,
         msg.dist_m = std::hypot(msg.obstacle_x, msg.obstacle_y);  // 契约 §5.3: 与坐标自洽
         msg.description = describeThreat(geom, boxarray.box[best]);
 
+        const bool in_warn = best_dist <= static_cast<float>(obstacle_warn_dist_);
         RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 2000,
-                             "%s 障碍物威胁物: %s（%zu pts, 最近点 %.2f m, 方位角 %.0f°）",
+                             "%s 检测到障碍物: %s（%zu pts, 最近点 %.2f m, 方位角 %.0f°, 威胁=%s）",
                              perception_common::toString(gate_->side()), msg.description.c_str(),
                              geom.points, static_cast<double>(geom.near_dist),
                              std::atan2(static_cast<double>(geom.near_y),
-                                        static_cast<double>(geom.near_x)) * 180.0 / M_PI);
+                                        static_cast<double>(geom.near_x)) * 180.0 / M_PI,
+                             in_warn ? "是" : "否");
     }
     else
     {
@@ -582,8 +633,8 @@ void Cluster::publishObstacleWarning(const box_msg::msg::Boxs& boxarray,
         msg.dist_m = 999.0f;    // 无数据哨兵值（契约 §9）
 
         RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 2000,
-                             "%s 无 %.1fm 内的障碍物威胁 → 未检出（999.0）",
-                             perception_common::toString(gate_->side()), obstacle_warn_dist_);
+                             "%s 无目标 → 未检出（999.0）",
+                             perception_common::toString(gate_->side()));
     }
 
     // 位置即 frame_id 所声明的雷达系坐标（未做车体系变换，与系统侧约定：按 frame_id 自行变换）

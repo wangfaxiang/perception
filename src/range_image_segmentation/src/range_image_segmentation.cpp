@@ -4,7 +4,8 @@
  *
  * 将调平点云按 (水平角, 俯仰角) 投影成一张 1° 网格图像(默认 120x45)，
  * 在"距离连续"这一维上找断点：
- *   Rule 1: 单个格子内，多点按距离排序，相邻两点距离差 > gap_thresh 的近侧点 -> 沟壑边缘
+ *   Rule 1: 单个格子内，多点按距离排序，相邻两点距离差 > gap_thresh + gap_slope*range
+ *           (距离自适应) 的近侧点 -> 沟壑边缘
  *   Rule 2: 水平相邻两格子，合并排序后找距离断点 -> 沟壑边缘(侧壁/横向边界)
  *   Rule 3: 垂直相邻两格子，合并排序后找距离断点 -> 沟壑边缘(近沿)
  *   Rule 4: 某列无沟壑时，取该列最上方有回波格子里最近的点 -> 悬崖边缘
@@ -12,6 +13,9 @@
  * 输入 : 调平点云 PointXYZI (lidar_leveling 输出)
  * 输出 : /<lidar_name>/ditch_cloud (PointCloud2, intensity: 255=沟壑, 60=悬崖)
  *        /<lidar_name>/ditch_line  (MarkerArray, LINE_STRIP)
+ *
+ * 障碍物框过滤：订阅 cluster 的全量框（不过滤），剔除落在框水平横截面（xy 投影）内的
+ * 边缘点，避免地面障碍物/推进梁形成的假断点误报为沟壑/悬崖。
  */
 
 #include <rclcpp/rclcpp.hpp>
@@ -21,6 +25,8 @@
 #include <visualization_msgs/msg/marker_array.hpp>
 #include <geometry_msgs/msg/point.hpp>
 #include <dth_messages/msg/edge_warning.hpp>
+#include <box_msg/msg/boxs.hpp>
+#include <box_msg/msg/box.hpp>
 
 #include <pcl_conversions/pcl_conversions.h>
 #include <pcl/point_cloud.h>
@@ -66,9 +72,24 @@ public:
     max_range_ = declare_parameter<double>("max_range", 12.0);
     min_range_ = declare_parameter<double>("min_range", 0.2);
     gap_thresh_ = declare_parameter<double>("gap_thresh", 1.0);
+    gap_slope_ = declare_parameter<double>("gap_slope", 0.15);
     edge_max_range_ = declare_parameter<double>("edge_max_range", 10.0);
+    cliff_min_elev_ = declare_parameter<double>("cliff_min_elev", -8.0);
     outlier_mean_k_ = declare_parameter<int>("outlier_mean_k", 6);
     outlier_std_mul_ = declare_parameter<double>("outlier_std_mul", 1.0);
+
+    // 方位角聚类（线段可视化）：相邻两点 range 差或欧氏距离超阈值即断开为不同簇，
+    // 每簇点数少于 cluster_min_points 的过滤掉。
+    cluster_gap_range_ = declare_parameter<double>("cluster_gap_range", 1.0);
+    cluster_gap_dist_ = declare_parameter<double>("cluster_gap_dist", 1.0);
+    cluster_min_points_ = declare_parameter<int>("cluster_min_points", 10);
+    edge_smooth_enable_ = declare_parameter<bool>("edge_smooth_enable", true);
+
+    // 障碍物框过滤：订阅 cluster 的全量框（不过滤），剔除框内由地面障碍物/推进梁形成的假边缘
+    box_topic_ = declare_parameter<std::string>(
+      "box_topic", prefix + "/box/cluster/euclidean_all");
+    box_filter_enable_ = declare_parameter<bool>("box_filter_enable", true);
+    box_filter_margin_ = declare_parameter<double>("box_filter_margin", 0.0);
 
     // 边坡告警: 本实例只发布「单雷达原始告警」到节点私有话题，由 perception_common 包的
     // warning_fusion 合并后发布契约话题 /perception/edge_warning 与 /perception/stop_command。
@@ -119,6 +140,9 @@ public:
     sub_ = create_subscription<sensor_msgs::msg::PointCloud2>(
       input_topic_, rclcpp::SensorDataQoS(),
       std::bind(&RangeImageSegmentation::onCloud, this, std::placeholders::_1));
+    sub_boxes_ = create_subscription<box_msg::msg::Boxs>(
+      box_topic_, rclcpp::QoS(10),
+      std::bind(&RangeImageSegmentation::onBoxes, this, std::placeholders::_1));
     pub_edge_cloud_ =
       create_publisher<sensor_msgs::msg::PointCloud2>(edge_cloud_topic, rclcpp::QoS(10));
     pub_edge_line_ =
@@ -135,13 +159,19 @@ public:
       get_logger(),
       "range_image_segmentation started (lidar_name=%s): input=%s, image=%dx%d, "
       "horizontal=[%.1f,%.1f]deg, vertical=[%.1f,%.1f]deg, "
-      "max_range=%.1fm, gap_thresh=%.2fm, edge_warning=%s [danger<%.1fm, caution<%.1fm, "
-      "heartbeat=%.1fHz, timeout=%.2fs]",
+      "max_range=%.1fm, gap_thresh=%.2fm(+%.3f/m), cliff_min_elev=%.1fdeg, "
+      "edge_warning=%s [danger<%.1fm, caution<%.1fm, heartbeat=%.1fHz, timeout=%.2fs]",
       lidar_name_.c_str(), input_topic_.c_str(), cols_, rows_, horiz_min_, horiz_max_,
-      vert_min_, vert_max_, max_range_, gap_thresh_, edge_topic_.c_str(),
-      edge_danger_dist_, edge_caution_dist_, edge_heartbeat_hz_, edge_timeout_s_);
+      vert_min_, vert_max_, max_range_, gap_thresh_, gap_slope_, cliff_min_elev_,
+      edge_topic_.c_str(), edge_danger_dist_, edge_caution_dist_, edge_heartbeat_hz_,
+      edge_timeout_s_);
     RCLCPP_INFO(get_logger(), "定向检测门控: %s（%s）",
                 motion_gate_enable_ ? "on" : "off", gate_->describe().c_str());
+    RCLCPP_INFO(get_logger(), "障碍物框过滤: %s（box_topic=%s, margin=%.2fm）",
+                box_filter_enable_ ? "on" : "off", box_topic_.c_str(), box_filter_margin_);
+    RCLCPP_INFO(get_logger(), "方位角聚类: gap_range=%.2fm, gap_dist=%.2fm, min_points=%d, smooth=%s",
+                cluster_gap_range_, cluster_gap_dist_, cluster_min_points_,
+                edge_smooth_enable_ ? "on" : "off");
   }
 
 private:
@@ -207,7 +237,7 @@ private:
       // if (elevation > -10.0 && range < 3.0 && p.z > -0.5f) {
       //   continue;
       // }
-      if (range < 3.0 && p.z > -1.0f) {
+      if (range < 2.5 && p.z > -0.5f) {
         continue;
       }      
 
@@ -228,9 +258,12 @@ private:
     std::vector<uint8_t> col_has_ditch(cols_, 0);
 
     // 在已按距离升序的序列里找相邻断点, 近侧点标记为沟壑边缘
+    // 阈值随距离线性放大：远处地面点因角分辨率导致的自然间距更大，固定阈值会误判
     auto detectGaps = [&](const Cell & sorted) {
       for (size_t i = 0; i + 1 < sorted.size(); ++i) {
-        if (sorted[i + 1].first - sorted[i].first > gap_thresh_) {
+        const float range = sorted[i].first;
+        const double gap_thresh = gap_thresh_ + gap_slope_ * range;  // 距离自适应
+        if (sorted[i + 1].first - sorted[i].first > gap_thresh) {
           const int id = sorted[i].second;
           flagged[id] = 1;
           col_has_ditch[point_cell[id] % cols_] = 1;
@@ -291,11 +324,54 @@ private:
       }
       const Cell & cell = cells[topmost * cols_ + c];  // Rule 1 后已按距离升序
       const int id = cell.front().second;
+      // 过滤垂直角过大的悬崖点：远处近水平的点多为误判
+      const auto & p = points[id];
+      const double elevation = std::asin(p.z / cell.front().first) * 180.0 / kPi;
+      if (elevation > cliff_min_elev_) {
+        continue;
+      }
       flagged[id] = 1;
       is_cliff[id] = 1;
     }
 
+    // ---- 过滤障碍物框内的边缘点：地面障碍物/推进梁会形成假断点，框内边缘点剔除 ----
+    // if (box_filter_enable_) { 
+    //   box_msg::msg::Boxs boxes;
+    //   {
+    //     std::lock_guard<std::mutex> lock(box_mutex_);
+    //     boxes = latest_boxes_;
+    //   }
+    //   const float margin = static_cast<float>(box_filter_margin_);
+    //   for (const auto & b : boxes.box) {
+    //     const float hw = b.w / 2.0f + margin;
+    //     const float hl = b.l / 2.0f + margin;
+    //     for (size_t id = 0; id < points.size(); ++id) {
+    //       if (!flagged[id]) {
+    //         continue;
+    //       }
+    //       const auto & p = points[id];
+    //       // 只要边缘点落在聚类框的水平横截面（xy 投影）内就过滤：
+    //       // 地面障碍物在 3D 框内；推进梁等悬空物的框 z 范围不含地面点，但其横截面仍应遮蔽
+    //       if (std::fabs(p.x - b.x) <= hw &&
+    //           std::fabs(p.y - b.y) <= hl) {
+    //         flagged[id] = 0;
+    //         is_cliff[id] = 0;
+    //       }
+    //     }
+    //   }
+    // }
+
     publish(msg->header, points, flagged, is_cliff);
+  }
+
+  // 缓存 cluster 发布的全量障碍物框（不过滤），供本帧边缘点过滤使用
+  void onBoxes(const box_msg::msg::Boxs::SharedPtr msg)
+  {
+    if (!msg) {
+      return;
+    }
+    std::lock_guard<std::mutex> lock(box_mutex_);
+    latest_boxes_ = *msg;
   }
 
   void publish(
@@ -330,21 +406,60 @@ private:
       edge_filtered = edge;
     }
 
+    // 过滤近处高位边缘点：range < 2m 且 z > -0.6m 的点剔除（推进梁等近处结构件），过滤后再聚类
+    {
+      pcl::PointCloud<pcl::PointXYZI> kept;
+      for (const auto & p : edge_filtered.points) {
+        const float range = std::sqrt(p.x * p.x + p.y * p.y + p.z * p.z);
+        if (range < 2.5f && p.z > -0.8f) {
+          continue;
+        }
+        kept.push_back(p);
+      }
+      edge_filtered = kept;
+    }
+
     // 边缘点云
     sensor_msgs::msg::PointCloud2 cloud_msg;
     pcl::toROSMsg(edge_filtered, cloud_msg);
     cloud_msg.header = header;
     pub_edge_cloud_->publish(cloud_msg);
 
-    // 按方位角排序（用于线段）
+    // 边缘线段：边缘点按水平方位角排序后聚类，每簇单独连成一条折线并着色
     std::vector<std::pair<double, int>> order;  // (方位角, 在 edge_filtered 中的下标)
     order.reserve(edge_filtered.size());
     for (int i = 0; i < static_cast<int>(edge_filtered.size()); ++i) {
       const auto & p = edge_filtered[i];
       order.emplace_back(std::atan2(p.y, p.x), i);
     }
+    std::sort(order.begin(), order.end());
 
-    // 边缘线段
+    // 按方位角顺序聚类：相邻两点 range 差 > cluster_gap_range_ 或欧氏距离 > cluster_gap_dist_
+    // 则视为不同簇；每簇至少 cluster_min_points_ 个点，不足的簇过滤掉。
+    std::vector<std::vector<int>> clusters;  // 每簇存 edge_filtered 下标（按方位角升序）
+    std::vector<int> cur;
+    for (size_t i = 0; i < order.size(); ++i) {
+      const int idx = order[i].second;
+      const auto & p = edge_filtered[idx];
+      const float range = std::sqrt(p.x * p.x + p.y * p.y + p.z * p.z);
+      if (!cur.empty()) {
+        const auto & prev = edge_filtered[cur.back()];
+        const float prev_range = std::sqrt(prev.x * prev.x + prev.y * prev.y + prev.z * prev.z);
+        const float dx = p.x - prev.x;
+        const float dy = p.y - prev.y;
+        const float dz = p.z - prev.z;
+        const float dist = std::sqrt(dx * dx + dy * dy + dz * dz);
+        if (std::fabs(range - prev_range) > cluster_gap_range_ || dist > cluster_gap_dist_) {
+          clusters.push_back(std::move(cur));
+          cur.clear();
+        }
+      }
+      cur.push_back(idx);
+    }
+    if (!cur.empty()) {
+      clusters.push_back(std::move(cur));
+    }
+
     visualization_msgs::msg::MarkerArray array;
     visualization_msgs::msg::Marker clear;
     clear.header = header;
@@ -353,54 +468,70 @@ private:
     clear.action = visualization_msgs::msg::Marker::DELETEALL;
     array.markers.push_back(clear);
 
-    if (!edge_filtered.empty()) {
-      std::sort(order.begin(), order.end());
+    // 通过聚类点数过滤后的边缘点（即 array 中所有线段点），用于边坡告警
+    pcl::PointCloud<pcl::PointXYZI> edge_clustered;
 
-      // 调试：每 10 个点打印一次 z / 垂直角 / range
-      // RCLCPP_INFO(get_logger(), "----------------------------------------");
-      // for (size_t i = 0; i < order.size(); i += 3) {
-      //   const auto & p = edge_filtered[order[i].second];
-      //   const float range = std::sqrt(p.x * p.x + p.y * p.y + p.z * p.z);
-      //   const double elevation = std::asin(p.z / range) * 180.0 / kPi;
-      //   RCLCPP_INFO(get_logger(), "[edge] z=%.3f elev=%.2fdeg range=%.3fm",
-      //               p.z, elevation, range);
-      // }
-
-      // 每 3 个点取平均坐标作为代表，平滑
-      std::vector<geometry_msgs::msg::Point> sampled;
-      sampled.reserve(order.size() / 3 + 1);
-      for (size_t i = 0; i < order.size(); i += 3) {
-        const size_t end = std::min(order.size(), i + 3);
-        double sx = 0.0, sy = 0.0, sz = 0.0;
-        for (size_t j = i; j < end; ++j) {
-          const auto & q = edge_filtered[order[j].second];
-          sx += q.x;
-          sy += q.y;
-          sz += q.z;
-        }
-        const double n = static_cast<double>(end - i);
-        geometry_msgs::msg::Point pt;
-        pt.x = static_cast<float>(sx / n);
-        pt.y = static_cast<float>(sy / n);
-        pt.z = static_cast<float>(sz / n);
-        sampled.push_back(pt);
+    int line_id = 0;
+    for (const auto & cluster : clusters) {
+      if (static_cast<int>(cluster.size()) < cluster_min_points_) {
+        continue;  // 点数过少的簇过滤
       }
+
+      // 调试：打印本簇中 range < 2m 的边缘点的高度与垂直角（1Hz 节流，避免刷屏）
+      // for (const int idx : cluster) {
+      //   const auto & q = edge_filtered[idx];
+      //   const float r = std::sqrt(q.x * q.x + q.y * q.y + q.z * q.z);
+      //   if (r < 2.0f) {
+      //     const double elevation = std::asin(q.z / r) * 180.0 / kPi;
+      //     RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 1000,
+      //                          "[edge] range=%.3fm z=%.3fm elev=%.2fdeg",
+      //                          r, q.z, elevation);
+      //   }
+      // }
 
       visualization_msgs::msg::Marker line;
       line.header = header;
       line.ns = "ditch";
-      line.id = 0;
+      line.id = line_id++;
       line.type = visualization_msgs::msg::Marker::LINE_STRIP;
       line.action = visualization_msgs::msg::Marker::ADD;
       line.scale.x = 0.1;
-      line.color.r = 1.0f;
-      line.color.g = 0.0f;
-      line.color.b = 0.0f;
+      hueToRgb(line_id, line.color.r, line.color.g, line.color.b);
       line.color.a = 1.0f;
       line.pose.orientation.w = 1.0;
-      line.points.reserve(sampled.size());
-      for (const auto & pt : sampled) {
+      line.points.reserve(cluster.size());
+      const int n = static_cast<int>(cluster.size());
+      for (int j = 0; j < n; ++j) {
+        const auto & qc = edge_filtered[cluster[j]];
+        geometry_msgs::msg::Point pt;
+        pcl::PointXYZI qs = qc;
+        if (edge_smooth_enable_) {
+          // 折线平滑：每点与前后各 2 点（最多 5 点）取平均，两端不硬凑 5 点
+          const int lo = std::max(0, j - 2);
+          const int hi = std::min(n - 1, j + 2);
+          float sx = 0.0f;
+          float sy = 0.0f;
+          float sz = 0.0f;
+          for (int k = lo; k <= hi; ++k) {
+            const auto & qk = edge_filtered[cluster[k]];
+            sx += qk.x;
+            sy += qk.y;
+            sz += qk.z;
+          }
+          const float inv = 1.0f / static_cast<float>(hi - lo + 1);
+          pt.x = sx * inv;
+          pt.y = sy * inv;
+          pt.z = sz * inv;
+          qs.x = sx * inv;
+          qs.y = sy * inv;
+          qs.z = sz * inv;
+        } else {
+          pt.x = qc.x;
+          pt.y = qc.y;
+          pt.z = qc.z;
+        }
         line.points.push_back(pt);
+        edge_clustered.push_back(qs);
       }
       array.markers.push_back(line);
     }
@@ -408,7 +539,7 @@ private:
     pub_edge_line_->publish(array);
 
     // ---- 边坡告警（原始告警，由 warning_fusion 合并发布契约话题）----
-    publishEdgeWarning(edge_filtered);
+    publishEdgeWarning(edge_clustered);
   }
 
   // 根据本帧边缘点云计算并发布原始边坡告警（由 warning_fusion 合并为契约话题）
@@ -432,7 +563,7 @@ private:
         msg.level = dth_messages::msg::EdgeWarning::LEVEL_SAFE;
       }
       RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 2000,
-                           "%s 检测到边坡: 最近距离=%.2f m（边缘 %zu pts）→ %s "
+                           "%s检测到边坡:最近距离=%.2f m（%zu个点）→ %s "
                            "（报警阈值 %.1f m / 停车阈值 %.1f m）",
                            perception_common::toString(gate_->side()),
                            min_dist, edge.size(), levelName(msg.level),
@@ -516,6 +647,23 @@ private:
     }
   }
 
+  // 用黄金分割角生成尽可能区分的簇颜色（HSV→RGB，S=1, V=1）
+  static void hueToRgb(int idx, float & r, float & g, float & b)
+  {
+    const double hue = std::fmod(idx * 0.618033988749895, 1.0);
+    const double h6 = hue * 6.0;
+    const int i = static_cast<int>(std::floor(h6));
+    const double f = h6 - i;
+    switch (i % 6) {
+      case 0: r = 1.0f; g = static_cast<float>(f); b = 0.0f; break;
+      case 1: r = static_cast<float>(1.0 - f); g = 1.0f; b = 0.0f; break;
+      case 2: r = 0.0f; g = 1.0f; b = static_cast<float>(f); break;
+      case 3: r = 0.0f; g = static_cast<float>(1.0 - f); b = 1.0f; break;
+      case 4: r = static_cast<float>(f); g = 0.0f; b = 1.0f; break;
+      default: r = 1.0f; g = 0.0f; b = static_cast<float>(1.0 - f); break;
+    }
+  }
+
   static const char * levelName(uint8_t level)
   {
     switch (level) {
@@ -529,9 +677,15 @@ private:
   double max_range_ = 12.0;
   double min_range_ = 0.2;
   double gap_thresh_ = 1.0;
+  double gap_slope_ = 0.15;
   double edge_max_range_ = 10.0;
+  double cliff_min_elev_ = -8.0;
   int outlier_mean_k_ = 6;
   double outlier_std_mul_ = 1.0;
+  double cluster_gap_range_ = 1.0;
+  double cluster_gap_dist_ = 1.0;
+  int cluster_min_points_ = 10;
+  bool edge_smooth_enable_ = true;
   double horiz_min_ = -60.0;
   double horiz_max_ = 60.0;
   double vert_min_ = -45.0;
@@ -549,6 +703,11 @@ private:
   double edge_heartbeat_period_s_ = 0.1;
   double edge_timeout_s_ = 0.5;
 
+  // 障碍物框过滤（订阅 cluster 全量框，剔除框内假边缘）
+  std::string box_topic_;
+  bool box_filter_enable_ = true;
+  double box_filter_margin_ = 0.0;
+
   // 定向检测门控（契约 §3.1/§6.2）：共用 perception_common/motion_state.hpp
   std::unique_ptr<perception_common::MotionGate> gate_;
   bool motion_gate_enable_ = true;
@@ -556,6 +715,7 @@ private:
 
   // ---- 订阅 / 发布 ---- //
   rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr sub_;
+  rclcpp::Subscription<box_msg::msg::Boxs>::SharedPtr sub_boxes_;
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pub_edge_cloud_;
   rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr pub_edge_line_;
   rclcpp::Publisher<dth_messages::msg::EdgeWarning>::SharedPtr pub_edge_;
@@ -568,6 +728,10 @@ private:
   rclcpp::Time last_edge_publish_time_;
   bool cloud_seen_ = false;
   bool stale_warned_ = false;
+
+  // ---- 障碍物框缓存（onBoxes 与 onCloud 共享，加锁保护）---- //
+  std::mutex box_mutex_;
+  box_msg::msg::Boxs latest_boxes_;
 };
 
 int main(int argc, char ** argv)

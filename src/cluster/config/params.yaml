@@ -2,7 +2,8 @@
 #
 # 输入：ransac 地面过滤输出的非地面点云（/front/no_ground、/rear/no_ground）
 # 输出：
-#   /<lidar>/box/cluster/{euclidean,region_rowing}         调试用包围盒（box_msg）
+#   /<lidar>/box/cluster/{euclidean,region_rowing}         过滤后包围盒（报警用，box_msg）
+#   /<lidar>/box/cluster/{euclidean,region_rowing}_all     全量包围盒（不过滤，供边坡检测等下游使用）
 #   /<lidar>/box/cluster/.../marker                        RViz 包围盒
 #   ~/obstacle_warning_raw（= /cluster_front|rear/obstacle_warning_raw）
 #       契约 §3.1/§5.3 的「单雷达原始障碍物告警」（dth_messages/ObstacleWarning），
@@ -25,6 +26,8 @@ cluster_front:
     input_topic: "/front/no_ground"
     euclidean_topic: "/front/box/cluster/euclidean"
     region_rowing_topic: "/front/box/cluster/region_rowing"
+    euclidean_all_topic: "/front/box/cluster/euclidean_all"
+    region_rowing_all_topic: "/front/box/cluster/region_rowing_all"
     euclidean_marker_topic: "/front/box/cluster/euclidean/marker"
     region_rowing_marker_topic: "/front/box/cluster/region_rowing/marker"
 
@@ -58,6 +61,8 @@ cluster_rear:
     input_topic: "/rear/no_ground"
     euclidean_topic: "/rear/box/cluster/euclidean"
     region_rowing_topic: "/rear/box/cluster/region_rowing"
+    euclidean_all_topic: "/rear/box/cluster/euclidean_all"
+    region_rowing_all_topic: "/rear/box/cluster/region_rowing_all"
     euclidean_marker_topic: "/rear/box/cluster/euclidean/marker"
     region_rowing_marker_topic: "/rear/box/cluster/region_rowing/marker"
 

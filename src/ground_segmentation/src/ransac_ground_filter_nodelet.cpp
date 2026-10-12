@@ -17,13 +17,41 @@
 #include <pcl/common/centroid.h>
 #include <pcl/common/transforms.h>
 
+#include <cmath>
+#include <cstdint>
+#include <functional>
 #include <limits>
 #include <random>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace
 {
+// 距离自适应体素降采样使用的体素索引与哈希
+struct VoxelKey
+{
+  std::int64_t ix;
+  std::int64_t iy;
+  std::int64_t iz;
+
+  bool operator==(const VoxelKey & other) const
+  {
+    return ix == other.ix && iy == other.iy && iz == other.iz;
+  }
+};
+
+struct VoxelKeyHash
+{
+  std::size_t operator()(const VoxelKey & key) const
+  {
+    std::size_t seed = std::hash<std::int64_t>{}(key.ix);
+    seed ^= std::hash<std::int64_t>{}(key.iy) + 0x9e3779b9 + (seed << 6) + (seed >> 2);
+    seed ^= std::hash<std::int64_t>{}(key.iz) + 0x9e3779b9 + (seed << 6) + (seed >> 2);
+    return seed;
+  }
+};
+
 Eigen::Vector3d getArbitraryOrthogonalVector(const Eigen::Vector3d & input)
 {
   const double x = input.x();
@@ -124,6 +152,9 @@ RANSACGroundFilterComponent::RANSACGroundFilterComponent(const rclcpp::NodeOptio
   voxel_size_x_ = declare_parameter("voxel_size_x", 0.04);
   voxel_size_y_ = declare_parameter("voxel_size_y", 0.04);
   voxel_size_z_ = declare_parameter("voxel_size_z", 0.04);
+  use_adaptive_voxel_ = declare_parameter("use_adaptive_voxel", true);
+  adaptive_voxel_ratio_ = declare_parameter("adaptive_voxel_ratio", 0.01);
+  adaptive_voxel_max_size_ = declare_parameter("adaptive_voxel_max_size", 0.25);
   height_threshold_ = declare_parameter("height_threshold", 0.01);
   max_range_ = declare_parameter("max_range", 6.0);
   debug_ = declare_parameter("debug", false);
@@ -311,10 +342,65 @@ void RANSACGroundFilterComponent::filter(
   // downsample pointcloud to reduce ransac calculation cost
   pcl::PointCloud<PointType>::Ptr downsampled_cloud(new pcl::PointCloud<PointType>);
   downsampled_cloud->points.reserve(ranged_cloud->points.size());
-  pcl::VoxelGrid<PointType> filter;
-  filter.setInputCloud(ranged_cloud);
-  filter.setLeafSize(voxel_size_x_, voxel_size_y_, voxel_size_z_);
-  filter.filter(*downsampled_cloud);
+
+  if (use_adaptive_voxel_) {
+    // 距离自适应体素降采样：体素边长随水平距离增大，
+    // 使近处与远处的点密度趋于一致，避免近处点过密主导 RANSAC 平面拟合。
+    std::unordered_map<VoxelKey, int, VoxelKeyHash> voxel_map;
+    voxel_map.reserve(ranged_cloud->points.size());
+    for (std::size_t i = 0; i < ranged_cloud->points.size(); ++i) {
+      const auto & p = ranged_cloud->points[i];
+      if (!std::isfinite(p.x) || !std::isfinite(p.y) || !std::isfinite(p.z)) {
+        continue;
+      }
+      const double r = std::sqrt(p.x * p.x + p.y * p.y);
+      const double grow = adaptive_voxel_ratio_ * r;
+      double sx = voxel_size_x_ + grow;
+      double sy = voxel_size_y_ + grow;
+      double sz = voxel_size_z_ + grow;
+      if (adaptive_voxel_max_size_ > 0.0) {
+        sx = std::min(sx, adaptive_voxel_max_size_);
+        sy = std::min(sy, adaptive_voxel_max_size_);
+        sz = std::min(sz, adaptive_voxel_max_size_);
+      }
+      const auto ix = static_cast<std::int64_t>(std::floor(p.x / sx));
+      const auto iy = static_cast<std::int64_t>(std::floor(p.y / sy));
+      const auto iz = static_cast<std::int64_t>(std::floor(p.z / sz));
+      const VoxelKey key{ix, iy, iz};
+      // 保留离体素中心最近的点
+      const double cx = static_cast<double>(ix) * sx;
+      const double cy = static_cast<double>(iy) * sy;
+      const double cz = static_cast<double>(iz) * sz;
+      const double dx = p.x - cx;
+      const double dy = p.y - cy;
+      const double dz = p.z - cz;
+      const double dist2 = dx * dx + dy * dy + dz * dz;
+      auto it = voxel_map.find(key);
+      if (it == voxel_map.end()) {
+        voxel_map.emplace(key, static_cast<int>(i));
+      } else {
+        const auto & q = ranged_cloud->points[it->second];
+        const double qx = q.x - cx;
+        const double qy = q.y - cy;
+        const double qz = q.z - cz;
+        if (dist2 < qx * qx + qy * qy + qz * qz) {
+          it->second = static_cast<int>(i);
+        }
+      }
+    }
+    for (const auto & kv : voxel_map) {
+      downsampled_cloud->points.push_back(ranged_cloud->points[kv.second]);
+    }
+  } else {
+    pcl::VoxelGrid<PointType> filter;
+    filter.setInputCloud(ranged_cloud);
+    filter.setLeafSize(voxel_size_x_, voxel_size_y_, voxel_size_z_);
+    filter.filter(*downsampled_cloud);
+  }
+
+  downsampled_cloud->width = downsampled_cloud->points.size();
+  downsampled_cloud->height = 1;
+  downsampled_cloud->is_dense = true;
 
   // apply ransac
   pcl::PointIndices::Ptr inliers(new pcl::PointIndices);
@@ -424,6 +510,15 @@ rcl_interfaces::msg::SetParametersResult RANSACGroundFilterComponent::paramCallb
   }
   if (get_param(p, "voxel_size_z", voxel_size_z_)) {
     RCLCPP_DEBUG(get_logger(), "Setting voxel_size_z to: %lf.", voxel_size_z_);
+  }
+  if (get_param(p, "use_adaptive_voxel", use_adaptive_voxel_)) {
+    RCLCPP_DEBUG(get_logger(), "Setting use_adaptive_voxel to: %d.", use_adaptive_voxel_);
+  }
+  if (get_param(p, "adaptive_voxel_ratio", adaptive_voxel_ratio_)) {
+    RCLCPP_DEBUG(get_logger(), "Setting adaptive_voxel_ratio to: %lf.", adaptive_voxel_ratio_);
+  }
+  if (get_param(p, "adaptive_voxel_max_size", adaptive_voxel_max_size_)) {
+    RCLCPP_DEBUG(get_logger(), "Setting adaptive_voxel_max_size to: %lf.", adaptive_voxel_max_size_);
   }
   if (get_param(p, "debug", debug_)) {
     RCLCPP_DEBUG(get_logger(), "Setting debug to: %d.", debug_);

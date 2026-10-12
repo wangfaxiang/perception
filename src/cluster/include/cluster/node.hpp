@@ -46,6 +46,14 @@ private:
     box_msg::msg::Boxs clustersToBoxs(const std::vector<pcl::PointIndices>& cluster_indices,
                                       const pcl::PointCloud<pcl::PointXYZ>::ConstPtr& cloud,
                                       std::vector<BoxGeom>* geoms);
+    // 全部聚类框（不过滤），供下游（边坡检测）过滤障碍物内的假边缘
+    box_msg::msg::Boxs clustersToBoxsAll(const std::vector<pcl::PointIndices>& cluster_indices,
+                                         const pcl::PointCloud<pcl::PointXYZ>::ConstPtr& cloud);
+    // 计算单个簇的包围盒与最近点摘要（纯几何计算，不含过滤）
+    void computeClusterBox(const pcl::PointIndices& indices,
+                           const pcl::PointCloud<pcl::PointXYZ>::ConstPtr& cloud,
+                           box_msg::msg::Box& boxs,
+                           BoxGeom& geom);
     void printBoxInfo(const box_msg::msg::Boxs& boxarray);
 
     // ---- 障碍物告警（契约 §3.1/§5.3）：本实例只发「单雷达原始告警」到节点私有话题，
@@ -75,6 +83,8 @@ private:
     rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr pointsubscribe;
     rclcpp::Publisher<box_msg::msg::Boxs>::SharedPtr publisher_cluster_euclidean;
     rclcpp::Publisher<box_msg::msg::Boxs>::SharedPtr publisher_cluster_region_rowing;
+    rclcpp::Publisher<box_msg::msg::Boxs>::SharedPtr publisher_cluster_euclidean_all;
+    rclcpp::Publisher<box_msg::msg::Boxs>::SharedPtr publisher_cluster_region_rowing_all;
     rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr publisher_cluster_euclidean_marker;
     rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr publisher_cluster_region_rowing_marker;
     rclcpp::Publisher<dth_messages::msg::ObstacleWarning>::SharedPtr publisher_obstacle_warning;

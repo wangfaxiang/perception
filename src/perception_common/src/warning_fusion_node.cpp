@@ -22,14 +22,17 @@
  * 融合规则:
  *   边坡（§5.2）: 取等级更高的一路，同级取 dist 更近者；warning = (level ≠ LEVEL_SAFE)。
  *   障碍（§3.1/§5.3）: 类别优先（人员 > 车辆 > 其他），同级取 dist_m 最近者；
- *                      无人威胁时输出安全默认值（detected=false / type=0 / dist=999.0）。
+ *                      威胁 = detected=true 且 dist_m ≤ obstacle_warn_dist；
+ *                      无威胁时输出安全默认值（detected=false / type=0 / dist=999.0）。
  *   急停（§3.3/§5.1）: 两类候选各自独立消抖后合并，reason 取数值最小者
  *                      （= 优先级最高：人员 1 > 车辆 2 > 其他 3 > 边坡 4），
  *                      confidence/description 与胜出候选同源。
  *
  * 安全默认值与心跳（§4.3）: 启动即进入安全态（stop=false / warning=false / detected=false /
  * 距离 999.0 / 置信度 0.0），周期发布；某路原始告警断流超时按安全默认值参与融合，
- * 全部断流即输出安全默认值；风险消失后立即恢复 stop=false（§7.3 操作员复位的前置条件）。
+ * 全部断流即输出安全默认值；风险须连续 stop_release_debounce_frames 个周期消失后才恢复
+ * stop=false（触发消抖 stop_debounce_frames 帧 / 解除消抖 stop_release_debounce_frames 周期，
+ * §7.3 操作员复位的前置条件）。
  */
 
 #include <rclcpp/rclcpp.hpp>
@@ -78,10 +81,17 @@ public:
 
     // ---- 急停联动（§3.3/§5.1/§7）----
     this->declare_parameter("stop_on_danger", true);          // false = 只告警不联动急停
-    this->declare_parameter("stop_debounce_frames", 2);       // 连续 N 帧原始告警才置 stop
-    // 急停阈值（唯一真源 = config/params.yaml 的 /** 共享段，与检测实例同源）:
+    this->declare_parameter("stop_debounce_frames", 2);       // 触发：连续 N 帧原始告警才置 stop
+    this->declare_parameter("stop_release_debounce_frames", 20);  // 解除：连续 N 个无危险周期才解除 stop
+    // 急停/报警阈值（唯一真源 = config/params.yaml 的 /** 共享段，与检测实例同源）:
     this->declare_parameter("edge_danger_dist", rclcpp::ParameterType::PARAMETER_DOUBLE);
     this->declare_parameter("obstacle_danger_dist", rclcpp::ParameterType::PARAMETER_DOUBLE);
+    // 障碍物报警阈值：检测实例原始告警的 detected 只表示「检测到目标」并带实际距离，
+    // 距离 ≤ obstacle_warn_dist 才作为威胁进入 /perception/obstacle_warning（报警收口在本节点）
+    this->declare_parameter("obstacle_warn_dist", rclcpp::ParameterType::PARAMETER_DOUBLE);
+    // 障碍物急停滞回量（米）：进入阈值 obstacle_danger_dist，解除阈值 obstacle_danger_dist + 该值，
+    // 抑制雷达点云在阈值附近抖动造成的 stop 反复开关（0 = 关闭滞回）
+    this->declare_parameter("obstacle_stop_hysteresis_m", 0.5);
 
     this->get_parameter("edge_warning_topic", edge_topic_);
     this->get_parameter("obstacle_warning_topic", obstacle_topic_);
@@ -95,17 +105,24 @@ public:
     this->get_parameter("source_timeout_s", source_timeout_s_);
     this->get_parameter("stop_on_danger", stop_on_danger_);
     this->get_parameter("stop_debounce_frames", stop_debounce_frames_);
+    this->get_parameter("stop_release_debounce_frames", stop_release_debounce_frames_);
     this->get_parameter("edge_danger_dist", edge_danger_dist_);
     this->get_parameter("obstacle_danger_dist", obstacle_danger_dist_);
+    this->get_parameter("obstacle_warn_dist", obstacle_warn_dist_);
+    this->get_parameter("obstacle_stop_hysteresis_m", obstacle_stop_hysteresis_m_);
 
     if (!(heartbeat_hz_ > 0.0)) heartbeat_hz_ = 10.0;
-    if (stop_debounce_frames_ < 1) stop_debounce_frames_ = 1;  // 1 = 不消抖，收到即触发
-    if (!(edge_danger_dist_ > 0.0) || !(obstacle_danger_dist_ > 0.0))
+    if (stop_debounce_frames_ < 1) stop_debounce_frames_ = 1;  // 1 = 触发不消抖，收到即置位
+    if (stop_release_debounce_frames_ < 1) stop_release_debounce_frames_ = 1;  // 1 = 解除不消抖，立即解除
+    if (!(edge_danger_dist_ > 0.0) || !(obstacle_danger_dist_ > 0.0) ||
+        !(obstacle_warn_dist_ > 0.0) || obstacle_stop_hysteresis_m_ < 0.0)
     {
       RCLCPP_FATAL(this->get_logger(),
-                   "急停阈值非法（edge_danger_dist=%.1f, obstacle_danger_dist=%.1f）："
-                   "须由 config/params.yaml 的 /** 共享段提供且 > 0",
-                   edge_danger_dist_, obstacle_danger_dist_);
+                   "阈值非法（edge_danger_dist=%.1f, obstacle_danger_dist=%.1f, "
+                   "obstacle_warn_dist=%.1f, hysteresis=%.1f）：须由 config/params.yaml 的 "
+                   "/** 共享段提供且 > 0（hysteresis ≥ 0）",
+                   edge_danger_dist_, obstacle_danger_dist_, obstacle_warn_dist_,
+                   obstacle_stop_hysteresis_m_);
       throw std::runtime_error("invalid danger thresholds");
     }
 
@@ -147,11 +164,13 @@ public:
                 edge_topic_.c_str(), obstacle_topic_.c_str(), stop_topic_.c_str(),
                 heartbeat_hz_, source_timeout_s_, gate_->cmdTopic().c_str());
     RCLCPP_INFO(this->get_logger(),
-                "急停联动: 边坡 DANGER(>%.1fm 内) / 障碍物 ≤%.1fm → %s "
-                "(stop_on_danger=%s, debounce=%d帧, 最坏额外延迟≈%.0fms)",
-                edge_danger_dist_, obstacle_danger_dist_, stop_topic_.c_str(),
-                stop_on_danger_ ? "true" : "false", stop_debounce_frames_,
-                1000.0 * stop_debounce_frames_ / heartbeat_hz_);
+                "急停联动: 边坡 DANGER(>%.1fm 内) / 障碍物报警≤%.1fm、急停≤%.1fm(滞回+%.1fm) → %s "
+                "(stop_on_danger=%s, 触发消抖=%d帧≈%.0fms, 解除消抖=%d帧≈%.0fms)",
+                edge_danger_dist_, obstacle_warn_dist_, obstacle_danger_dist_,
+                obstacle_stop_hysteresis_m_, stop_topic_.c_str(),
+                stop_on_danger_ ? "true" : "false",
+                stop_debounce_frames_, 1000.0 * stop_debounce_frames_ / heartbeat_hz_,
+                stop_release_debounce_frames_, 1000.0 * stop_release_debounce_frames_ / heartbeat_hz_);
   }
 
 private:
@@ -167,12 +186,16 @@ private:
     bool stale_warned{false};
   };
 
-  /// 单向消抖计数器：按「新帧」计数（本节点会复用最近一帧最长 source_timeout_s，
-  /// 若按采样周期计数，检测侧的单帧毛刺会被当成 N 个周期，消抖形同虚设）
+  /// 双向消抖计数器：
+  /// 触发方向按「新帧」计数（本节点会复用最近一帧最长 source_timeout_s，若按采样周期计数，
+  /// 检测侧的单帧毛刺会被当成 N 个周期，消抖形同虚设），门限 = stop_debounce_frames_；
+  /// 解除方向按「连续无危险周期」计数（断流/无目标每周期都判为无危险），门限 = stop_release_debounce_frames_。
   struct Debounce
   {
-    int frames{0};
-    uint64_t last_key{0};  // 已计数的那一帧（侧别 + 帧序号，0 = 无）
+    int frames{0};          // 触发方向已累计的新帧数（≥ stop_debounce_frames_ 即置位）
+    uint64_t last_key{0};   // 已计数的那一帧（侧别 + 帧序号，0 = 无）
+    int clear_frames{0};    // 解除方向已累计的连续无危险周期数
+    bool active{false};     // 消抖后的危险状态（reason 判断的真源）
   };
 
   template <typename T>
@@ -234,11 +257,19 @@ private:
     return msg;
   }
 
-  /// 障碍物两路取优：类别优先（人员 > 车辆 > 其他），同级取 dist_m 更近者（契约 §3.1/§5.3）
-  static bool betterObstacle(const ObstacleWarning &a, const ObstacleWarning &b)
+  /// 报警意义上的威胁：detected=true、类别合法，且最近距离 ≤ obstacle_warn_dist。
+  /// 检测实例对「任意检测到的目标」都 detected=true 并给实际距离，
+  /// 报警门限（obstacle_warn_dist）统一收口到本节点，急停门限（obstacle_danger_dist）另判。
+  bool isThreatInRange(const ObstacleWarning &msg) const
   {
-    const bool a_threat = isThreat(a);
-    const bool b_threat = isThreat(b);
+    return isThreat(msg) && msg.dist_m <= static_cast<float>(obstacle_warn_dist_);
+  }
+
+  /// 障碍物两路取优：类别优先（人员 > 车辆 > 其他），同级取 dist_m 更近者（契约 §3.1/§5.3）
+  bool betterObstacle(const ObstacleWarning &a, const ObstacleWarning &b) const
+  {
+    const bool a_threat = isThreatInRange(a);
+    const bool b_threat = isThreatInRange(b);
     if (a_threat != b_threat) return a_threat;
     if (!a_threat) return true;  // 两侧均无威胁，输出等价
     if (a.obstacle_type != b.obstacle_type) return a.obstacle_type < b.obstacle_type;
@@ -252,18 +283,30 @@ private:
            msg.obstacle_type <= ObstacleWarning::TYPE_OTHER;
   }
 
-  void tick(Debounce &db, bool active, uint64_t key)
+  /// 双向消抖：触发按「新帧」计数（门限 stop_debounce_frames_），
+  /// 解除按「连续无危险周期」计数（门限 stop_release_debounce_frames_）。
+  /// 一旦置位（db.active=true），危险须连续 stop_release_debounce_frames_ 个周期消失才解除，
+  /// 期间单帧/单周期的抖动不会让 stop 反复开关。
+  void tick(Debounce &db, bool danger, uint64_t key)
   {
-    if (!active)
+    if (danger)
+    {
+      db.clear_frames = 0;
+      if (key != db.last_key)
+      {
+        db.last_key = key;
+        db.frames = std::min(db.frames + 1, stop_debounce_frames_);
+      }
+      if (db.frames >= stop_debounce_frames_)
+        db.active = true;   // 连续 N 帧新告警 → 置位
+    }
+    else
     {
       db.frames = 0;
       db.last_key = 0;
-      return;
-    }
-    if (key != db.last_key)
-    {
-      db.last_key = key;
-      db.frames = std::min(db.frames + 1, stop_debounce_frames_);
+      db.clear_frames = std::min(db.clear_frames + 1, stop_release_debounce_frames_);
+      if (db.clear_frames >= stop_release_debounce_frames_)
+        db.active = false;  // 连续 N 个无危险周期 → 解除
     }
   }
 
@@ -294,7 +337,7 @@ private:
     const bool front_obstacle_wins = betterObstacle(front_obstacle, rear_obstacle);
 
     ObstacleWarning obstacle_out = front_obstacle_wins ? front_obstacle : rear_obstacle;
-    const bool obstacle_threat = isThreat(obstacle_out);
+    const bool obstacle_threat = isThreatInRange(obstacle_out);
     if (!obstacle_threat)
     {
       obstacle_out = safeObstacle();  // 契约 §4.3: 无威胁 → 安全默认值
@@ -311,16 +354,28 @@ private:
         (front_edge_wins ? front_edge_.seq : rear_edge_.seq) * 2u + (front_edge_wins ? 0u : 1u);
     tick(debounce_edge_, edge_danger, edge_key);
 
-    const bool obstacle_danger =
+    // 障碍物急停滞回：进入阈值 obstacle_danger_dist，解除阈值 obstacle_danger_dist + 滞回量。
+    // 一旦进入危险区即锁存报停，目标退到「危险区 + 滞回带」之外（> danger + hysteresis）才解除，
+    // 避免雷达点云在阈值附近抖动造成 stop 反复开关。
+    const bool obstacle_in_danger =
         obstacle_threat && obstacle_out.dist_m <= static_cast<float>(obstacle_danger_dist_);
+    const bool obstacle_in_hold =
+        obstacle_threat &&
+        obstacle_out.dist_m <= static_cast<float>(obstacle_danger_dist_ + obstacle_stop_hysteresis_m_);
+    if (obstacle_in_danger)
+      obstacle_stop_latched_ = true;   // 进入危险区 → 锁存
+    else if (!obstacle_in_hold)
+      obstacle_stop_latched_ = false;  // 退出危险区 + 滞回带 → 解除
+
+    const bool obstacle_danger = obstacle_stop_latched_;
     const uint64_t obstacle_key = (front_obstacle_wins ? front_obstacle_.seq
                                                        : rear_obstacle_.seq) *
                                       2u +
                                   (front_obstacle_wins ? 0u : 1u);
     tick(debounce_obstacle_, obstacle_danger, obstacle_key);
 
-    const bool edge_ready = debounce_edge_.frames >= stop_debounce_frames_;
-    const bool obstacle_ready = debounce_obstacle_.frames >= stop_debounce_frames_;
+    const bool edge_ready = debounce_edge_.active;
+    const bool obstacle_ready = debounce_obstacle_.active;
 
     // reason 取数值最小者 = 优先级最高（人员 1 > 车辆 2 > 其他 3 > 边坡 4）：
     // 契约未规定两类同时成立时的取舍，此处按 §5.1 枚举数值顺序（与 §3.1 类别优先一致）取最严者。
@@ -466,9 +521,13 @@ private:
   std::string frame_id_;
   double heartbeat_hz_{10.0}, source_timeout_s_{0.5};
   bool stop_on_danger_{true};
-  int stop_debounce_frames_{2};
+  int stop_debounce_frames_{2};        // 触发消抖：连续 N 帧新告警才置位
+  int stop_release_debounce_frames_{2};  // 解除消抖：连续 N 个无危险周期才解除
   double edge_danger_dist_{0.0};      // 边坡 DANGER 阈值（米，仅供参考 confidence 换算）
+  double obstacle_warn_dist_{0.0};    // 障碍物报警阈值（米）：原始告警 detected 只表示「检测到目标」
   double obstacle_danger_dist_{0.0};  // 障碍物急停阈值（米）
+  double obstacle_stop_hysteresis_m_{0.5};  // 障碍物急停滞回量（米），0 = 关闭滞回
+  bool obstacle_stop_latched_{false};       // 障碍物急停滞回锁存（进入危险区置位）
   bool last_stop_{false};             // 上一周期 stop 电平（仅用于状态翻转日志）
 };
 

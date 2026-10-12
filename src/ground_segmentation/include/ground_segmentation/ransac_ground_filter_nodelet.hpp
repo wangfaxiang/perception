@@ -85,6 +85,9 @@ private:
   double voxel_size_x_ = 0.1;
   double voxel_size_y_ = 0.1;
   double voxel_size_z_ = 0.1;
+  bool use_adaptive_voxel_ = false;
+  double adaptive_voxel_ratio_ = 0.01;
+  double adaptive_voxel_max_size_ = 0.25;
   bool debug_ = false;
   bool is_initialized_debug_message_ = false;
   Eigen::Vector3d unit_vec_ = Eigen::Vector3d::UnitZ();

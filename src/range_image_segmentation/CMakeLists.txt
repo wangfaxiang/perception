@@ -18,6 +18,7 @@ find_package(visualization_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(pcl_conversions REQUIRED)
 find_package(dth_messages REQUIRED)
+find_package(box_msg REQUIRED)
 # 运行期依赖：launch 需解析 perception_common 共享参数 share 目录；源码用其 motion_state.hpp
 find_package(perception_common REQUIRED)
 find_package(PCL REQUIRED COMPONENTS common filters)
@@ -36,6 +37,7 @@ ament_target_dependencies(range_image_segmentation_node
   geometry_msgs
   pcl_conversions
   dth_messages
+  box_msg
   perception_common
 )
 

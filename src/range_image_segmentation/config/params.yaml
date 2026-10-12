@@ -2,6 +2,8 @@
 #
 # 将调平点云按 (水平角, 俯仰角) 投影成 1° 网格图像(默认 120x45)，
 # 在"距离连续"一维上找断点，输出 /<lidar>/ditch_cloud + /<lidar>/ditch_line。
+# 同时订阅 cluster 的全量框，剔除落在框水平横截面（xy 投影）内的边缘点，
+# 避免地面障碍物/推进梁形成的假边缘。
 #
 # 与 pothole_detection 一致：本节点同时发布单雷达原始边坡告警
 # ~/edge_warning_raw，由 perception_common 的 warning_fusion 合并为契约话题；
@@ -32,10 +34,23 @@ range_image_segmentation_front:
 
     max_range: 12.0        # 只取 12m 内的点
     min_range: 0.2         # 最小距离(m)，小于该值的点丢弃
-    gap_thresh: 1.0        # 相邻点距离差大于该值视为断点(m)
+    gap_thresh: 1.0        # 相邻点距离差大于该值视为断点(m)，近处基准阈值
+    gap_slope: 0.15        # 断点阈值随距离线性放大系数(1/m)：有效阈值 = gap_thresh + gap_slope*range
     edge_max_range: 10.0   # 边缘点输出距离上限(m)，大于该值的边缘点丢弃
+    cliff_min_elev: -8.0  # 悬崖点最小垂直角(度)，垂直角大于该值的悬崖点视为远处误判过滤
     outlier_mean_k: 6      # 离群点判断的近邻数
     outlier_std_mul: 1.0   # 离群点剔除的 std 倍数
+
+    # ---- 方位角聚类（线段可视化）：边缘点按方位角排序后聚类，每簇一条线、不同颜色 ----
+    cluster_gap_range: 1.0   # 相邻两点 range 差大于该值视为不同簇(m)
+    cluster_gap_dist: 1.0    # 相邻两点欧氏距离大于该值视为不同簇(m)
+    cluster_min_points: 10   # 每簇最少点数，少于该值的簇过滤
+    edge_smooth_enable: true   # 是否对每簇折线做平滑（每点与前后各 2 点取平均）
+
+    # ---- 障碍物框过滤：订阅 cluster 的全量框，剔除框内由地面障碍物/推进梁形成的假边缘 ----
+    box_topic: "/front/box/cluster/euclidean_all"   # 全量框话题（cluster 发布，不过滤）
+    box_filter_enable: true     # 是否启用框内边缘点过滤
+    box_filter_margin: 0.0      # 包围盒外扩边距(m)，0 表示不扩展
 
     horizontal_angle_min: -60.0   # 水平角下限(度)
     horizontal_angle_max: 60.0    # 水平角上限(度)
@@ -69,9 +84,22 @@ range_image_segmentation_rear:
     max_range: 12.0
     min_range: 0.2
     gap_thresh: 1.0
+    gap_slope: 0.15
     edge_max_range: 10.0
+    cliff_min_elev: -8.0
     outlier_mean_k: 6
     outlier_std_mul: 1.0
+
+    # ---- 方位角聚类（线段可视化）：边缘点按方位角排序后聚类，每簇一条线、不同颜色 ----
+    cluster_gap_range: 1.0   # 相邻两点 range 差大于该值视为不同簇(m)
+    cluster_gap_dist: 1.0    # 相邻两点欧氏距离大于该值视为不同簇(m)
+    cluster_min_points: 10   # 每簇最少点数，少于该值的簇过滤
+    edge_smooth_enable: true   # 是否对每簇折线做平滑（每点与前后各 2 点取平均）
+
+    # ---- 障碍物框过滤：订阅 cluster 的全量框，剔除框内由地面障碍物/推进梁形成的假边缘 ----
+    box_topic: "/rear/box/cluster/euclidean_all"   # 全量框话题（cluster 发布，不过滤）
+    box_filter_enable: true     # 是否启用框内边缘点过滤
+    box_filter_margin: 0.0      # 包围盒外扩边距(m)，0 表示不扩展
 
     horizontal_angle_min: -60.0
     horizontal_angle_max: 60.0
