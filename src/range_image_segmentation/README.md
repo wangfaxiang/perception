@@ -18,7 +18,7 @@ E1R 输出 144 线规则结构点云，正好满足 range image 的前提，因�
 ## 数据流
 
 ```
-/<lidar_name>/rslidar_points_leveled   (调平点云, PointXYZI)
+/<lidar_name>/all_filter   (地面 + 过滤后非地面, PointXYZI)
         │
         ▼
  range_image_segmentation
@@ -67,5 +67,5 @@ ros2 launch range_image_segmentation range_image_segmentation.launch.py
 
 ```bash
 ros2 run range_image_segmentation range_image_segmentation_node \
-  --ros-args -p lidar_name:=front -p input_topic:=/front/rslidar_points_leveled
+  --ros-args -p lidar_name:=front -p input_topic:=/front/all_filter
 ```

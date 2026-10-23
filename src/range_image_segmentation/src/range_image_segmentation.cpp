@@ -10,7 +10,7 @@
  *   Rule 3: 垂直相邻两格子，合并排序后找距离断点 -> 沟壑边缘(近沿)
  *   Rule 4: 某列无沟壑时，取该列最上方有回波格子里最近的点 -> 悬崖边缘
  *
- * 输入 : 调平点云 PointXYZI (lidar_leveling 输出)
+ * 输入 : all_filter 点云 PointXYZI (ground_segmentation 输出: 地面 + 过滤后非地面)
  * 输出 : /<lidar_name>/ditch_cloud (PointCloud2, intensity: 255=沟壑, 60=悬崖)
  *        /<lidar_name>/ditch_line  (MarkerArray, LINE_STRIP)
  *
@@ -61,7 +61,7 @@ public:
     const std::string prefix = lidar_name_.empty() ? "" : ("/" + lidar_name_);
 
     input_topic_ =
-      declare_parameter<std::string>("input_topic", prefix + "/rslidar_points_leveled");
+      declare_parameter<std::string>("input_topic", prefix + "/all_filter");
     const std::string edge_cloud_topic =
       declare_parameter<std::string>("edge_cloud_topic", prefix + "/ditch_cloud");
     const std::string edge_line_topic =
@@ -697,8 +697,8 @@ private:
   std::string input_topic_;
   std::string frame_id_;
   std::string edge_topic_;
-  double edge_danger_dist_ = 5.0;
-  double edge_caution_dist_ = 10.0;
+  double edge_danger_dist_ = 1.8;
+  double edge_caution_dist_ = 3.0;
   double edge_heartbeat_hz_ = 10.0;
   double edge_heartbeat_period_s_ = 0.1;
   double edge_timeout_s_ = 0.5;

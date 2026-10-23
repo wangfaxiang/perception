@@ -19,6 +19,7 @@
 
 #include <geometry_msgs/msg/pose_array.hpp>
 #include <sensor_msgs/msg/point_cloud2.hpp>
+#include <visualization_msgs/msg/marker_array.hpp>
 
 #include <pcl/filters/extract_indices.h>
 #include <pcl/filters/voxel_grid.h>
@@ -32,8 +33,10 @@
 #include <tf2_ros/transform_listener.h>
 
 #include <chrono>
+#include <cstdint>
 #include <mutex>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace ground_segmentation
@@ -59,17 +62,25 @@ class RANSACGroundFilterComponent : public rclcpp::Node
   using PointCloud2ConstPtr = sensor_msgs::msg::PointCloud2::ConstSharedPtr;
 
 private:
-  rclcpp::Publisher<PointCloud2>::SharedPtr pub_no_ground_;
+  rclcpp::Publisher<PointCloud2>::SharedPtr pub_no_ground_filter_;
+  rclcpp::Publisher<PointCloud2>::SharedPtr pub_all_filter_;
   rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr sub_cloud_;
   rclcpp::Publisher<geometry_msgs::msg::PoseArray>::SharedPtr debug_pose_array_pub_;
   rclcpp::Publisher<PointCloud2>::SharedPtr debug_ground_cloud_pub_;
+  rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr debug_dust_grid_pub_;
+  rclcpp::TimerBase::SharedPtr dust_grid_timer_;
 
   std::unique_ptr<tf2_ros::Buffer> tf_buffer_;
   std::unique_ptr<tf2_ros::TransformListener> tf_listener_;
   std::mutex mutex_;
 
-  void filter(
-    const PointCloud2ConstPtr & input, PointCloud2 & output);
+  bool filter(
+    const PointCloud2ConstPtr & input,
+    PointCloud2 & no_ground_filter_output,
+    PointCloud2 & all_filter_output);
+
+  void applyDustFilter(
+    const sensor_msgs::msg::PointCloud2 & input, sensor_msgs::msg::PointCloud2 & output);
 
   void onPointCloud(const sensor_msgs::msg::PointCloud2 & input);
 
@@ -85,12 +96,32 @@ private:
   double voxel_size_x_ = 0.1;
   double voxel_size_y_ = 0.1;
   double voxel_size_z_ = 0.1;
+  bool use_downsample_ = true;
   bool use_adaptive_voxel_ = false;
   double adaptive_voxel_ratio_ = 0.01;
   double adaptive_voxel_max_size_ = 0.25;
   bool debug_ = false;
   bool is_initialized_debug_message_ = false;
   Eigen::Vector3d unit_vec_ = Eigen::Vector3d::UnitZ();
+
+  // ---- 扬尘过滤参数（单帧网格密度法）----
+  bool enable_dust_filter_ = true;
+  double dust_horiz_angle_res_deg_ = 0.2;
+  double dust_vert_angle_res_deg_ = 0.2;
+  double dust_range_res_ = 0.4;
+  double dust_range_growth_ = 0.02;
+  int dust_min_density_ = 2;   // 网格内点数 < 该阈值 → 判为扬尘剔除
+
+  // ---- 扬尘网格可视化（调试）----
+  bool debug_dust_grid_ = false;
+  std::string debug_dust_grid_topic_ = "~/debug/dust_grid";
+  int debug_dust_grid_stride_ = 20;
+  double debug_dust_grid_range_min_ = 0.5;
+  double debug_dust_grid_range_max_ = 10.0;
+  double debug_dust_grid_azimuth_min_ = -60.0;
+  double debug_dust_grid_azimuth_max_ = 60.0;
+  double debug_dust_grid_elevation_min_ = -45.0;
+  double debug_dust_grid_elevation_max_ = 0.0;
 
   /*!
    * Output transformed PointCloud from in_cloud_ptr->header.frame_id to in_target_frame
@@ -127,6 +158,8 @@ private:
   void publishDebugMessage(
     const geometry_msgs::msg::PoseArray & debug_pose_array,
     const pcl::PointCloud<PointType> & ground_cloud, const std_msgs::msg::Header & header);
+
+  void publishDustGrid();
 
   void setDebugPublisher();
 

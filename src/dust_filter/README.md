@@ -8,7 +8,8 @@
 ## 数据流
 
 ```
-/ls/lslidar_point_cloud  -->  dust_filter  -->  /ls/lslidar_point_cloud_filtered
+/front/rslidar_points_leveled  -->  dust_filter  -->  /front/rslidar_points_leveled_filtered
+/rear/rslidar_points_leveled   -->  dust_filter  -->  /rear/rslidar_points_leveled_filtered
    (sensor_msgs/PointCloud2)                       (sensor_msgs/PointCloud2，保留全部字段)
 ```
 
@@ -31,8 +32,9 @@ ros2 launch dust_filter dust_filter.launch.py
 
 | 参数 | 默认 | 说明 |
 | --- | --- | --- |
-| `input_topic` | `/ls/lslidar_point_cloud` | 订阅话题 |
-| `output_topic` | `/ls/lslidar_point_cloud_filtered` | 发布话题 |
+| `lidar_name` | `""` | 雷达标识（`front` / `rear`），用于推导默认话题名 |
+| `input_topic` | `/<name>/rslidar_points_leveled` | 订阅话题 |
+| `output_topic` | `/<name>/rslidar_points_leveled_filtered` | 发布话题 |
 | `frame_id` | `""` | 输出 frame_id，空则沿用输入 |
 | `horiz_angle_resolution` | `0.2` | 水平角分辨率（°） |
 | `vert_angle_resolution` | `0.2` | 垂直角分辨率（°） |

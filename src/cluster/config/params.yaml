@@ -1,6 +1,6 @@
 # 障碍物聚类（cluster）检测实例参数 —— 前/后雷达各一段（节点名 = launch 里的 cluster_front / cluster_rear）
 #
-# 输入：ransac 地面过滤输出的非地面点云（/front/no_ground、/rear/no_ground）
+# 输入：ransac 地面过滤 + 扬尘过滤后的非地面点云（/front/no_ground_filter、/rear/no_ground_filter）
 # 输出：
 #   /<lidar>/box/cluster/{euclidean,region_rowing}         过滤后包围盒（报警用，box_msg）
 #   /<lidar>/box/cluster/{euclidean,region_rowing}_all     全量包围盒（不过滤，供边坡检测等下游使用）
@@ -23,7 +23,7 @@
 cluster_front:
   ros__parameters:
     lidar_name: "front"
-    input_topic: "/front/no_ground"
+    input_topic: "/front/no_ground_filter"
     euclidean_topic: "/front/box/cluster/euclidean"
     region_rowing_topic: "/front/box/cluster/region_rowing"
     euclidean_all_topic: "/front/box/cluster/euclidean_all"
@@ -35,6 +35,21 @@ cluster_front:
     min_cluster_size: 15        # 最小簇点数
     max_cluster_size: 100000    # 最大簇点数
     region_rowing: false        # 是否同时跑区域生长聚类（调试用）
+    euclidean_cluster: "true"   # 是否跑欧氏聚类（"true"/"false"）
+    downsample: "true"          # 聚类前是否体素降采样（"true"/"false"）
+    leaf_size: 0.1             # 体素降采样边长（m，downsample=true 时生效）
+
+    # ---- 区域生长聚类参数（region_rowing=true 时生效）----
+    region_rowing_min_cluster_size: 5
+    region_rowing_max_cluster_size: 1000
+    smoothness_threshold: 0.05236   # 平滑阈值（弧度，3°）
+    curvature_threshold: 1.0
+    number_of_neighbours: 30
+    radius_search: 0.03
+
+    # ---- 临时调试：发布降采样后点云，便于观察降采样程度（用完可删）----
+    publish_downsampled_cloud: true
+    downsampled_cloud_topic: "/front/cluster_downsampled_cloud"
 
     # ---- 障碍物告警（本实例的原始告警，由 warning_fusion 合并发布契约话题）----
     # 上报距离阈值 obstacle_warn_dist 见 perception_common/config/params.yaml 的 /** 共享段
@@ -58,7 +73,7 @@ cluster_front:
 cluster_rear:
   ros__parameters:
     lidar_name: "rear"
-    input_topic: "/rear/no_ground"
+    input_topic: "/rear/no_ground_filter"
     euclidean_topic: "/rear/box/cluster/euclidean"
     region_rowing_topic: "/rear/box/cluster/region_rowing"
     euclidean_all_topic: "/rear/box/cluster/euclidean_all"
@@ -70,6 +85,21 @@ cluster_rear:
     min_cluster_size: 15
     max_cluster_size: 100000
     region_rowing: false
+    euclidean_cluster: "true"   # 是否跑欧氏聚类（"true"/"false"）
+    downsample: "true"          # 聚类前是否体素降采样（"true"/"false"）
+    leaf_size: 0.05             # 体素降采样边长（m，downsample=true 时生效）
+
+    # ---- 区域生长聚类参数（region_rowing=true 时生效）----
+    region_rowing_min_cluster_size: 5
+    region_rowing_max_cluster_size: 1000
+    smoothness_threshold: 0.05236   # 平滑阈值（弧度，3°）
+    curvature_threshold: 1.0
+    number_of_neighbours: 30
+    radius_search: 0.03
+
+    # ---- 临时调试：发布降采样后点云，便于观察降采样程度（用完可删）----
+    publish_downsampled_cloud: true
+    downsampled_cloud_topic: "/rear/downsampled_cloud"
 
     # ---- 障碍物告警（同 front 段语义）----
     obstacle_warning_raw_topic: "/cluster_rear/obstacle_warning_raw"

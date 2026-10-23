@@ -73,10 +73,10 @@ cluster_rear  (障碍物)   ─► /cluster_rear/obstacle_warning_raw        ┘
 
 | 参数 | 值 | 用途 |
 | --- | --- | --- |
-| `edge_danger_dist` | 4.0 | 边坡 DANGER 阈值（米）——检测实例分档 + 融合侧 confidence 换算 |
-| `edge_caution_dist` | 10.0 | 边坡 CAUTION 阈值（米）——仅检测实例分档用 |
-| `obstacle_warn_dist` | 15.0 | 障碍物「威胁物」上报距离（米）——仅 cluster 检测实例用 |
-| `obstacle_danger_dist` | 5.0 | 障碍物急停阈值（米）——仅融合节点用 |
+| `edge_danger_dist` | 1.8 | 边坡 DANGER 阈值（米）——检测实例分档 + 融合侧 confidence 换算 |
+| `edge_caution_dist` | 3.0 | 边坡 CAUTION 阈值（米）——仅检测实例分档用 |
+| `obstacle_warn_dist` | 4.0 | 障碍物「威胁物」上报距离（米）——仅 cluster 检测实例用 |
+| `obstacle_danger_dist` | 2.0 | 障碍物急停阈值（米）——仅融合节点用 |
 
 `warning_fusion` 段：话题（`edge_warning_topic` / `obstacle_warning_topic` / `stop_command_topic`）、
 来源（`front/rear_edge_topic`、`front/rear_obstacle_topic`）、`frame_id`（`base_link`）、

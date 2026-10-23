@@ -12,12 +12,12 @@
 /**:
   ros__parameters:
     # ---- 边坡（range_image_segmentation）----
-    edge_caution_dist: 10.0     # 最近边界距离 ≤ 该值 → CAUTION（仅告警，不联动急停）
-    edge_danger_dist: 5.0       # 最近边界距离 < 该值 → DANGER（并联动 /perception/stop_command）    
+    edge_caution_dist: 3.0      # 最近边界距离 ≤ 该值 → CAUTION（仅告警，不联动急停）
+    edge_danger_dist: 1.8       # 最近边界距离 < 该值 → DANGER（并联动 /perception/stop_command）
 
     # ---- 障碍物（cluster）----
-    obstacle_warn_dist: 7.0     # 最近障碍物距离 ≤ 该值才作为「威胁物」上报（超出视为未检出）
-    obstacle_danger_dist: 5.0   # 融合侧：威胁物距离 ≤ 该值 → 联动 /perception/stop_command
+    obstacle_warn_dist: 4.0     # 最近障碍物距离 ≤ 该值才作为「威胁物」上报（超出视为未检出）
+    obstacle_danger_dist: 2.0   # 融合侧：威胁物距离 ≤ 该值 → 联动 /perception/stop_command
 
 # ============ 共用融合节点（契约三话题唯一发布者）============
 # 订阅两类检测实例的单雷达原始告警:

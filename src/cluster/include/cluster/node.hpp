@@ -79,6 +79,8 @@ private:
     std::string downsample;
     std::string euclidean_cluster;
     bool region_rowing;
+    bool publish_downsampled_cloud_{false};   // 临时调试：是否发布降采样后点云
+    std::string downsampled_cloud_topic_;     // 降采样后点云话题
     rclcpp::Subscription<std_msgs::msg::String>::SharedPtr subjson;
     rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr pointsubscribe;
     rclcpp::Publisher<box_msg::msg::Boxs>::SharedPtr publisher_cluster_euclidean;
@@ -88,6 +90,7 @@ private:
     rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr publisher_cluster_euclidean_marker;
     rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr publisher_cluster_region_rowing_marker;
     rclcpp::Publisher<dth_messages::msg::ObstacleWarning>::SharedPtr publisher_obstacle_warning;
+    rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr publisher_downsampled_cloud;
 
     // ---- 障碍物告警状态与心跳 ----
     std::string obstacle_topic_;
@@ -97,6 +100,7 @@ private:
     double obstacle_heartbeat_period_s_{0.1};
     double obstacle_timeout_s_{0.5};
     double obstacle_warn_dist_{0.0};  // 威胁物上报距离（米），来源: 共享参数文件（无代码默认值）
+    double obstacle_danger_dist_{0.0};  // 障碍物急停距离（米），仅日志展示；实际急停由 warning_fusion 判定
     int obstacle_type_{3};            // 强制指定的类别（1 人员 / 2 车辆 / 3 其他）；cluster 无分类能力
     rclcpp::TimerBase::SharedPtr obstacle_heartbeat_timer_;
     std::mutex obstacle_mutex_;

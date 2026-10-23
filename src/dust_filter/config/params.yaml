@@ -1,4 +1,4 @@
-# 矿山扬尘过滤参数 —— 镭神 LS 雷达
+# 矿山扬尘过滤参数 —— 速腾聚创 E1R 固态雷达
 #
 # 思路：时间一致性过滤。灰尘/扬尘是瞬态点（每帧位置随机、不重复），
 #       真实障碍物/地面是稳定点（连续多帧落在同一网格）。
@@ -9,23 +9,48 @@
 #       若不运动补偿，静态障碍物会在网格里"滑动"而被误删。
 #       因此默认 use_tf=true 用 TF 把历史帧变换到固定坐标系 target_frame 再堆叠；
 #       无该 TF 时自动退回雷达坐标系堆叠（等价于假设车辆静止）。
+#
+# 前/后两颗雷达各启动一个节点实例，通过 lidar_name 区分。
+# lidar_name 用于推导默认话题名:
+#   front → /front/no_ground → /front/no_ground_filtered
+#   rear  → /rear/no_ground  → /rear/no_ground_filtered
 
-dust_filter:
+# ============ 前雷达 (front) ============
+dust_filter_front:
   ros__parameters:
-    input_topic: "/ls/lslidar_point_cloud"             # 订阅：雷达点云(sensor_msgs/PointCloud2)
-    output_topic: "/ls/lslidar_point_cloud_filtered"   # 发布：过滤后点云
-    frame_id: ""                                       # 输出 frame_id，为空则沿用输入
+    lidar_name: "front"
+    input_topic: "/front/no_ground"            # 订阅：地面滤除后的非地面点云(sensor_msgs/PointCloud2)
+    output_topic: "/front/no_ground_filtered"  # 发布：去扬尘后点云
+    frame_id: ""                                            # 输出 frame_id，为空则沿用输入
 
     # 球坐标网格分辨率：水平角(°)、垂直角(°)、水平距离(m)
-    horiz_angle_resolution: 0.3    # 水平角分辨率（°）
-    vert_angle_resolution: 0.3     # 垂直角分辨率（°）
+    horiz_angle_resolution: 0.2    # 水平角分辨率（°）
+    vert_angle_resolution: 0.2     # 垂直角分辨率（°）
     # 距离自适应：有效距离分辨率 = range_resolution * (1 + 水平距离 / range_scale)
     range_resolution: 0.5          # 近处基准距离分辨率（m）
     range_scale: 5.0              # 距离每增大该值，距离分辨率翻倍（m）
-    history_frames: 2              # 保留的历史帧数 n
-    min_occupied_frames: 2         # 某网格被 >= 该值帧历史占据则保留（取值 1..history_frames）
+    history_frames: 4              # 保留的历史帧数 n
+    min_occupied_frames: 3         # 某网格被 >= 该值帧历史占据则保留（取值 1..history_frames）
                                    #   =2: "两帧以上被占据才保留"，最严格（去扬尘更狠，但误删风险高）
                                    #   =1: 只要任意 1 帧历史占据过就保留，更宽松（保留更完整）
 
     use_tf: true                   # 是否用 TF 做运动补偿（推荐开启）
     target_frame: "odom"           # 固定坐标系（use_tf=true 时生效）
+
+# ============ 后雷达 (rear) ============
+dust_filter_rear:
+  ros__parameters:
+    lidar_name: "rear"
+    input_topic: "/rear/no_ground"
+    output_topic: "/rear/no_ground_filtered"
+    frame_id: ""
+
+    horiz_angle_resolution: 0.2
+    vert_angle_resolution: 0.2
+    range_resolution: 0.4
+    range_scale: 5.0
+    history_frames: 3
+    min_occupied_frames: 3
+
+    use_tf: true
+    target_frame: "odom"

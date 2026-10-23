@@ -9,7 +9,7 @@ import os
 
 def generate_launch_description():
     """启动 cluster 节点：前雷达(front) + 后雷达(rear) 各一个实例，
-    输入接 ransac 地面过滤输出的 no_ground 点云。
+    输入接 ransac 地面过滤 + 扬尘过滤后的 no_ground_filter 点云。
 
     每个实例按车辆运动方向定向检测（前进只测前、后退只测后、停车/原地旋转双向均测），
     并发布「单雷达原始障碍物告警」~/obstacle_warning_raw；契约话题
@@ -44,7 +44,7 @@ def generate_launch_description():
                         '（/perception/{edge_warning,obstacle_warning,stop_command} 的唯一发布者）。'
                         '已单独起过融合节点时置 false，避免重复发布契约话题/重复联动急停。',
         ),
-        # 前雷达聚类（输入: /front/no_ground，输出: /front/box/cluster/...）
+        # 前雷达聚类（输入: /front/no_ground_filter，输出: /front/box/cluster/...）
         Node(
             package='cluster',
             executable='cluster',
@@ -52,7 +52,7 @@ def generate_launch_description():
             output='screen',
             parameters=[shared_file, config_file],
         ),
-        # 后雷达聚类（输入: /rear/no_ground，输出: /rear/box/cluster/...）
+        # 后雷达聚类（输入: /rear/no_ground_filter，输出: /rear/box/cluster/...）
         Node(
             package='cluster',
             executable='cluster',

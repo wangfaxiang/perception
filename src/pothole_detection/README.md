@@ -110,7 +110,7 @@ ros2 run pothole_detection pothole_detection_node --ros-args \
 | `cliff_min_points` | 3 | 列内最少点数才判悬崖 |
 | `cliff_vert_margin_deg` | 1.0 | 最远点距 `max_vert_angle` 的最小角裕量（度） |
 | `edge_warning_raw_topic` | `~/edge_warning_raw` | 本实例原始边坡告警话题（由 warning_fusion 消费） |
-| `edge_danger_dist` / `edge_caution_dist` | **4.0 / 10.0** | 最近距离分档阈值（米）→ DANGER / CAUTION。**唯一真源在 `perception_common/config/params.yaml` 的 `/**` 共享段**（检测实例与融合节点同源），代码无默认值 |
+| `edge_danger_dist` / `edge_caution_dist` | **1.8 / 3.0** | 最近距离分档阈值（米）→ DANGER / CAUTION。**唯一真源在 `perception_common/config/params.yaml` 的 `/**` 共享段**（检测实例与融合节点同源），代码无默认值 |
 | `edge_heartbeat_hz` / `edge_timeout_s` | 10.0 / 0.5 | 告警心跳频率（契约 ≥5Hz）/ 点云断流判定超时（秒） |
 | `motion_gate_enable` | true | 是否启用运动方向定向检测门控 |
 | `motion_cmd_topic` | `/control/cmd_gate/cmd_vel` | gate 镜像话题（只订阅，不发布 cmd_vel） |

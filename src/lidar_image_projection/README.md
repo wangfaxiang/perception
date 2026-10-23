@@ -23,6 +23,9 @@ colcon build --cmake-args -DCMAKE_BUILD_TYPE=Debug --packages-select ground_segm
 colcon build --cmake-args -DCMAKE_BUILD_TYPE=Debug --packages-select cluster
 
 colcon build --cmake-args -DCMAKE_BUILD_TYPE=Debug --packages-select range_image_segmentation
+
+colcon build --cmake-args -DCMAKE_BUILD_TYPE=Debug --packages-select dust_filter
+
 ```
 -------------------------------------------------------------------------------------------
 
@@ -72,7 +75,8 @@ source /opt/ros/galactic/setup.bash
 source install/setup.bash
 
 ## 启动激光雷达
-ros2 launch rslidar_sdk start.py
+ros2 launch rslidar_sdk start.py 速腾聚创
+ros2 launch lslidar_driver lslidar_ls_double_launch.py #镭神雷达
 1.发布原始点云
 /front/rslidar_points
 /rear/rslidar_points

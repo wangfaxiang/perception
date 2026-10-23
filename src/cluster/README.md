@@ -10,10 +10,10 @@
 ## 数据流
 
 ```text
-/front/no_ground ─► cluster_front ─┬─► /front/box/cluster/{euclidean,region_rowing}(+marker)   （调试用）
-                                   └─► /cluster_front/obstacle_warning_raw ┐
-/front/no_ground ─► cluster_rear  ─┬─► /rear/box/cluster/...               ├─► warning_fusion ─┬─► /perception/obstacle_warning
-                                   └─► /cluster_rear/obstacle_warning_raw  ┘  (perception_common) └─► /perception/stop_command
+/front/no_ground_filter ─► cluster_front ─┬─► /front/box/cluster/{euclidean,region_rowing}(+marker)   （调试用）
+                                           └─► /cluster_front/obstacle_warning_raw ┐
+/rear/no_ground_filter  ─► cluster_rear  ─┬─► /rear/box/cluster/...                ├─► warning_fusion ─┬─► /perception/obstacle_warning
+                                           └─► /cluster_rear/obstacle_warning_raw  ┘  (perception_common) └─► /perception/stop_command
 ```
 
 `warning_fusion` 与边坡检测（`pothole_detection`）共用，见 `perception_common/README.md`：
@@ -74,13 +74,23 @@ ros2 launch perception_common warning_fusion.launch.py
 | 参数 | 默认值 | 说明 |
 | --- | --- | --- |
 | `lidar_name` | "" | front / rear，决定门控归属与默认话题 |
-| `input_topic` | `/<lidar>/no_ground` | ransac 地面过滤后的非地面点云 |
+| `input_topic` | `/<lidar>/no_ground_filter` | ransac 地面过滤 + 扬尘过滤后的非地面点云 |
 | `cluster_tolerance` / `min_cluster_size` / `max_cluster_size` | 0.2 / 15 / 100000 | 欧氏聚类参数 |
 | `region_rowing` | false | 是否同时跑区域生长聚类（调试） |
+| `euclidean_cluster` | `"true"` | 是否跑欧氏聚类（字符串 `"true"`/`"false"`） |
+| `downsample` | `"true"` | 聚类前是否体素降采样（字符串 `"true"`/`"false"`） |
+| `leaf_size` | 0.05 | 体素降采样边长（m，`downsample="true"` 时生效） |
+| `region_rowing_min_cluster_size` / `region_rowing_max_cluster_size` | 5 / 1000 | 区域生长聚类最小/最大簇点数 |
+| `smoothness_threshold` | 0.05236 | 区域生长平滑阈值（弧度，≈3°） |
+| `curvature_threshold` | 1.0 | 区域生长曲率阈值 |
+| `number_of_neighbours` | 30 | 区域生长邻居搜索数量 |
+| `radius_search` | 0.03 | 法线估计搜索半径（m） |
+| `publish_downsampled_cloud` | false | 临时调试：是否发布降采样后点云 |
+| `downsampled_cloud_topic` | `~/downsampled_cloud` | 降采样后点云话题 |
 | `obstacle_warning_raw_topic` | `~/obstacle_warning_raw` | 本实例原始告警话题（由 warning_fusion 消费） |
 | `obstacle_source` | `euclidean` | 哪一路聚类结果作为告警来源：`euclidean` / `region_rowing` |
 | `obstacle_type` | 3 | 强制类别（1 人员 / 2 车辆 / 3 其他）；0 为契约保留值，禁止配置 |
-| `obstacle_warn_dist` | **15.0** | 威胁物上报距离（米）。**唯一真源在 `perception_common/config/params.yaml` 的 `/**` 共享段**，代码无默认值，未提供则启动即失败 |
+| `obstacle_warn_dist` | **4.0** | 威胁物上报距离（米）。**唯一真源在 `perception_common/config/params.yaml` 的 `/**` 共享段**，代码无默认值，未提供则启动即失败 |
 | `frame_id` | `<lidar>_rslidar` | 无点云时的占位帧；有点云时用输入点云的 frame |
 | `obstacle_heartbeat_hz` / `obstacle_timeout_s` | 10.0 / 0.5 | 告警心跳频率（契约 ≥5Hz）/ 点云断流判定超时（秒） |
 | `motion_gate_enable` | true | 是否启用运动方向定向检测门控 |
