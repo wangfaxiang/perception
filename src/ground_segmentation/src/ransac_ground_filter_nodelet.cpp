@@ -214,6 +214,11 @@ RANSACGroundFilterComponent::RANSACGroundFilterComponent(const rclcpp::NodeOptio
     lidar_name.empty() ? "~/all_filter" : (prefix + "/all_filter");
   const std::string all_filter_topic =
     declare_parameter<std::string>("all_filter_topic", default_all_filter_topic);
+  // 扬尘过滤前的非地面点云（调试观察用，不参与下游计算）
+  const std::string default_no_ground_raw_topic =
+    lidar_name.empty() ? "~/no_ground_raw" : (prefix + "/no_ground_raw");
+  const std::string no_ground_raw_topic =
+    declare_parameter<std::string>("no_ground_raw_topic", default_no_ground_raw_topic);
 
   // 默认 base_frame 与雷达坐标系一致（调平后点云仍位于雷达坐标系）
   const std::string default_base_frame =
@@ -281,6 +286,8 @@ RANSACGroundFilterComponent::RANSACGroundFilterComponent(const rclcpp::NodeOptio
   // Setup publishers and subscriber (subscription kept alive by node)
   pub_no_ground_filter_ =
     this->create_publisher<PointCloud2>(no_ground_filter_topic, rclcpp::QoS(10));
+  pub_no_ground_raw_ =
+    this->create_publisher<PointCloud2>(no_ground_raw_topic, rclcpp::QoS(10));
   pub_all_filter_ = this->create_publisher<PointCloud2>(all_filter_topic, rclcpp::QoS(10));
 
   if (debug_dust_grid_) {
@@ -530,17 +537,20 @@ void RANSACGroundFilterComponent::onPointCloud(const sensor_msgs::msg::PointClou
 {
   std::scoped_lock lock(mutex_);
   PointCloud2::SharedPtr no_ground_filtered(new PointCloud2);
+  PointCloud2::SharedPtr no_ground_raw(new PointCloud2);
   PointCloud2::SharedPtr all_filtered(new PointCloud2);
   auto input_ptr = std::make_shared<const sensor_msgs::msg::PointCloud2>(input);
-  if (!filter(input_ptr, *no_ground_filtered, *all_filtered)) {
+  if (!filter(input_ptr, *no_ground_raw, *no_ground_filtered, *all_filtered)) {
     return;
   }
+  pub_no_ground_raw_->publish(*no_ground_raw);
   pub_no_ground_filter_->publish(*no_ground_filtered);
   pub_all_filter_->publish(*all_filtered);
 }
 
 bool RANSACGroundFilterComponent::filter(
   const PointCloud2::ConstSharedPtr & input,
+  PointCloud2 & no_ground_raw_output,
   PointCloud2 & no_ground_filter_output,
   PointCloud2 & all_filter_output)
 {
@@ -647,6 +657,7 @@ bool RANSACGroundFilterComponent::filter(
       this->get_logger(), *this->get_clock(), std::chrono::milliseconds(1000).count(),
       "failed to find a plane");
     // 找不到平面：无法划分地面，把整帧作为非地面（保底，不删点）
+    no_ground_raw_output = *input_transformed_ptr;
     no_ground_filter_output = *input_transformed_ptr;
     all_filter_output = *input_transformed_ptr;
     return true;
@@ -661,6 +672,7 @@ bool RANSACGroundFilterComponent::filter(
       M_PI);
     if (plane_slope > plane_slope_threshold_) {
       // 平面过倾：不误删，整帧作为非地面
+      no_ground_raw_output = *input_transformed_ptr;
       no_ground_filter_output = *input_transformed_ptr;
       all_filter_output = *input_transformed_ptr;
       return true;
@@ -711,6 +723,9 @@ bool RANSACGroundFilterComponent::filter(
     buildCloudFromIndices(*input_transformed_ptr, ground_idx);
   sensor_msgs::msg::PointCloud2 no_ground_cloud =
     buildCloudFromIndices(*input_transformed_ptr, no_ground_idx);
+
+  // 扬尘过滤前的非地面点云：单独发布（调试观察用，供对比过滤效果）
+  no_ground_raw_output = no_ground_cloud;
 
   // 对非地面点云做扬尘过滤
   sensor_msgs::msg::PointCloud2 no_ground_filtered;

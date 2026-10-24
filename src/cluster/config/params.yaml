@@ -38,6 +38,7 @@ cluster_front:
     euclidean_cluster: "true"   # 是否跑欧氏聚类（"true"/"false"）
     downsample: "true"          # 聚类前是否体素降采样（"true"/"false"）
     leaf_size: 0.1             # 体素降采样边长（m，downsample=true 时生效）
+    cluster_range_max: 6.0     # 聚类范围：只取雷达水平距离 8m 以内的点（米）
 
     # ---- 区域生长聚类参数（region_rowing=true 时生效）----
     region_rowing_min_cluster_size: 5
@@ -88,6 +89,7 @@ cluster_rear:
     euclidean_cluster: "true"   # 是否跑欧氏聚类（"true"/"false"）
     downsample: "true"          # 聚类前是否体素降采样（"true"/"false"）
     leaf_size: 0.05             # 体素降采样边长（m，downsample=true 时生效）
+    cluster_range_max: 6.0     # 聚类范围：只取雷达水平距离 8m 以内的点（米）
 
     # ---- 区域生长聚类参数（region_rowing=true 时生效）----
     region_rowing_min_cluster_size: 5

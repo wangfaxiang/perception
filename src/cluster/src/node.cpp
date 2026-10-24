@@ -104,6 +104,10 @@ Cluster::Cluster() : rclcpp::Node("Cluster")
     this->declare_parameter<float>("leaf_size", 0.05f);
     this->get_parameter("leaf_size", leaf_size);
 
+    // 聚类范围：只取雷达水平距离 cluster_range_max 以内的点参与聚类（米）
+    this->declare_parameter<float>("cluster_range_max", 8.0f);
+    this->get_parameter("cluster_range_max", cluster_range_max);
+
     this->declare_parameter<int>("region_rowing_min_cluster_size", 5);
     this->get_parameter("region_rowing_min_cluster_size", region_rowing_min_cluster_size);
 
@@ -245,37 +249,40 @@ visualization_msgs::msg::MarkerArray Cluster::boxsToMarkerArray(const box_msg::m
 {
     visualization_msgs::msg::MarkerArray marker_array;
 
-    // 先清空该命名空间下的旧 Marker，避免上一帧残留
-    visualization_msgs::msg::Marker clear_marker;
-    clear_marker.header.frame_id = frame_id;
-    clear_marker.header.stamp = boxs.header.stamp;
-    clear_marker.ns = "cluster_box";
-    clear_marker.id = 0;
-    clear_marker.action = visualization_msgs::msg::Marker::DELETEALL;
-    marker_array.markers.push_back(clear_marker);
+    // 分四类 Marker 命名空间：面 / 线框 / 顶点小球 / 文字，各自独立清空，避免上一帧残留
+    for (const char* ns : {"cluster_box_face", "cluster_box_wire", "cluster_box_corner", "cluster_box_text"})
+    {
+        visualization_msgs::msg::Marker clear_marker;
+        clear_marker.header.frame_id = frame_id;
+        clear_marker.header.stamp = boxs.header.stamp;
+        clear_marker.ns = ns;
+        clear_marker.id = 0;
+        clear_marker.action = visualization_msgs::msg::Marker::DELETEALL;
+        marker_array.markers.push_back(clear_marker);
+    }
+
+    // 公共头构造辅助：除 ns / type / id 外的字段均一致
+    auto make_marker = [&](const std::string& ns, int type, int mid) {
+        visualization_msgs::msg::Marker m;
+        m.header.frame_id = frame_id;
+        m.header.stamp = boxs.header.stamp;
+        m.ns = ns;
+        m.id = mid;
+        m.type = type;
+        m.action = visualization_msgs::msg::Marker::ADD;
+        m.pose.orientation.x = 0.0;
+        m.pose.orientation.y = 0.0;
+        m.pose.orientation.z = 0.0;
+        m.pose.orientation.w = 1.0;
+        m.lifetime.sec = 0;      // 0 表示永久显示
+        m.lifetime.nanosec = 0;
+        return m;
+    };
 
     int id = 1;
     const int n = static_cast<int>(boxs.box.size());
     for (const auto& b : boxs.box)
     {
-        visualization_msgs::msg::Marker marker;
-        marker.header.frame_id = frame_id;
-        marker.header.stamp = boxs.header.stamp;
-        marker.ns = "cluster_box";
-        marker.id = id;
-        marker.type = visualization_msgs::msg::Marker::CUBE;
-        marker.action = visualization_msgs::msg::Marker::ADD;
-        marker.pose.position.x = b.x;
-        marker.pose.position.y = b.y;
-        marker.pose.position.z = b.z;
-        marker.pose.orientation.x = 0.0;
-        marker.pose.orientation.y = 0.0;
-        marker.pose.orientation.z = 0.0;
-        marker.pose.orientation.w = 1.0;
-        marker.scale.x = b.w;
-        marker.scale.y = b.l;
-        marker.scale.z = b.h;
-
         // 不同簇使用不同颜色：按簇编号在 HSV 色相环上均匀取色
         float h = (n > 1) ? (static_cast<float>(id - 1) / static_cast<float>(n)) : 0.0f;
         const float s = 0.9f, v = 1.0f;
@@ -294,13 +301,89 @@ visualization_msgs::msg::MarkerArray Cluster::boxsToMarkerArray(const box_msg::m
             case 4: r = t; g = p; bl = v; break;
             default: r = v; g = p; bl = q; break;
         }
-        marker.color.a = 0.5f;
-        marker.color.r = r;
-        marker.color.g = g;
-        marker.color.b = bl;
-        marker.lifetime.sec = 0;      // 0 表示永久显示
-        marker.lifetime.nanosec = 0;
-        marker_array.markers.push_back(marker);
+
+        // 半箱尺寸与 8 个顶点（框无旋转，rt==0，轴对齐）
+        const float hx = b.w * 0.5f;
+        const float hy = b.l * 0.5f;
+        const float hz = b.h * 0.5f;
+        const float px[8] = {b.x - hx, b.x + hx, b.x + hx, b.x - hx,
+                             b.x - hx, b.x + hx, b.x + hx, b.x - hx};
+        const float py[8] = {b.y - hy, b.y - hy, b.y + hy, b.y + hy,
+                             b.y - hy, b.y - hy, b.y + hy, b.y + hy};
+        const float pz[8] = {b.z - hz, b.z - hz, b.z - hz, b.z - hz,
+                             b.z + hz, b.z + hz, b.z + hz, b.z + hz};
+
+        // 1) 半透明彩色面（保留体积感，内部点云仍可见）
+        visualization_msgs::msg::Marker face =
+            make_marker("cluster_box_face", visualization_msgs::msg::Marker::CUBE, id);
+        face.pose.position.x = b.x;
+        face.pose.position.y = b.y;
+        face.pose.position.z = b.z;
+        face.scale.x = b.w;
+        face.scale.y = b.l;
+        face.scale.z = b.h;
+        face.color.a = 0.35f;
+        face.color.r = r;
+        face.color.g = g;
+        face.color.b = bl;
+        marker_array.markers.push_back(face);
+
+        // 2) 高亮白色线框（12 条边，最醒目的轮廓线）
+        static const int edges[12][2] = {
+            {0, 1}, {1, 2}, {2, 3}, {3, 0},   // 底面
+            {4, 5}, {5, 6}, {6, 7}, {7, 4},   // 顶面
+            {0, 4}, {1, 5}, {2, 6}, {3, 7}};  // 侧棱
+        visualization_msgs::msg::Marker wire =
+            make_marker("cluster_box_wire", visualization_msgs::msg::Marker::LINE_LIST, id);
+        wire.scale.x = 0.05;  // 线宽（米）
+        wire.color.a = 1.0f;
+        wire.color.r = 1.0f;
+        wire.color.g = 1.0f;
+        wire.color.b = 1.0f;
+        wire.points.reserve(24);
+        for (const auto& e : edges)
+        {
+            geometry_msgs::msg::Point p1, p2;
+            p1.x = px[e[0]]; p1.y = py[e[0]]; p1.z = pz[e[0]];
+            p2.x = px[e[1]]; p2.y = py[e[1]]; p2.z = pz[e[1]];
+            wire.points.push_back(p1);
+            wire.points.push_back(p2);
+        }
+        marker_array.markers.push_back(wire);
+
+        // 3) 顶点小球（8 个角点，远距离小目标也肉眼可见）
+        visualization_msgs::msg::Marker corner =
+            make_marker("cluster_box_corner", visualization_msgs::msg::Marker::SPHERE_LIST, id);
+        corner.scale.x = corner.scale.y = corner.scale.z = 0.12;  // 球直径（米）
+        corner.color.a = 1.0f;
+        corner.color.r = r;
+        corner.color.g = g;
+        corner.color.b = bl;
+        corner.points.reserve(8);
+        for (int k = 0; k < 8; ++k)
+        {
+            geometry_msgs::msg::Point pt;
+            pt.x = px[k]; pt.y = py[k]; pt.z = pz[k];
+            corner.points.push_back(pt);
+        }
+        marker_array.markers.push_back(corner);
+
+        // 4) 文字标签：簇编号 + 距雷达水平距离（悬浮在框顶）
+        visualization_msgs::msg::Marker text =
+            make_marker("cluster_box_text", visualization_msgs::msg::Marker::TEXT_VIEW_FACING, id);
+        text.pose.position.x = b.x;
+        text.pose.position.y = b.y;
+        text.pose.position.z = b.z + hz + 0.3f;
+        text.scale.z = 0.3;  // 字高（米）
+        char label[64];
+        std::snprintf(label, sizeof(label), "%.1fm", std::hypot(b.x, b.y));
+        text.text = label;
+        text.color.a = 1.0f;
+        text.color.r = 1.0f;
+        text.color.g = 1.0f;
+        text.color.b = 1.0f;
+        marker_array.markers.push_back(text);
+
         ++id;
     }
     return marker_array;
@@ -504,11 +587,13 @@ void Cluster::onPointCloud(const sensor_msgs::msg::PointCloud2::ConstSharedPtr i
     pcl::PointCloud<pcl::PointXYZ>::Ptr cloud(new pcl::PointCloud<pcl::PointXYZ>);
     pcl::fromROSMsg(*input_msg, *cloud);
 
-    // 去除无效点（NaN/Inf）
+    // 去除无效点（NaN/Inf），并只保留雷达水平距离 cluster_range_max 以内的点
     pcl::PointCloud<pcl::PointXYZ>::Ptr cloud_clean(new pcl::PointCloud<pcl::PointXYZ>);
     cloud_clean->reserve(cloud->size());
+    const float cluster_range_max_sq = cluster_range_max * cluster_range_max;
     for (const auto& p : cloud->points)
-        if (std::isfinite(p.x) && std::isfinite(p.y) && std::isfinite(p.z))
+        if (std::isfinite(p.x) && std::isfinite(p.y) && std::isfinite(p.z) &&
+            p.x * p.x + p.y * p.y <= cluster_range_max_sq)
             cloud_clean->push_back(p);
 
     // 体素降采样：E1R 高密度点云先抽稀，大幅降低聚类耗时

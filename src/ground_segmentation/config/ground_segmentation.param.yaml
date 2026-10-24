@@ -40,6 +40,7 @@ ransac_ground_filter_front:
     lidar_name: "front"
     input_topic: "/front/rslidar_points_leveled"
     no_ground_filter_topic: "/front/no_ground_filter"   # 去扬尘后的非地面点云（聚类用）
+    no_ground_raw_topic: "/front/no_ground_raw"         # 扬尘过滤前的非地面点云（调试观察用）
     all_filter_topic: "/front/all_filter"               # 地面 + 过滤后非地面（边坡/悬崖检测用）
     base_frame: "front_rslidar"
     debug: false
@@ -87,6 +88,7 @@ ransac_ground_filter_rear:
     lidar_name: "rear"
     input_topic: "/rear/rslidar_points_leveled"
     no_ground_filter_topic: "/rear/no_ground_filter"   # 去扬尘后的非地面点云（聚类用）
+    no_ground_raw_topic: "/rear/no_ground_raw"         # 扬尘过滤前的非地面点云（调试观察用）
     all_filter_topic: "/rear/all_filter"               # 地面 + 过滤后非地面（边坡/悬崖检测用）
     base_frame: "rear_rslidar"
     debug: false

@@ -63,6 +63,7 @@ class RANSACGroundFilterComponent : public rclcpp::Node
 
 private:
   rclcpp::Publisher<PointCloud2>::SharedPtr pub_no_ground_filter_;
+  rclcpp::Publisher<PointCloud2>::SharedPtr pub_no_ground_raw_;
   rclcpp::Publisher<PointCloud2>::SharedPtr pub_all_filter_;
   rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr sub_cloud_;
   rclcpp::Publisher<geometry_msgs::msg::PoseArray>::SharedPtr debug_pose_array_pub_;
@@ -76,6 +77,7 @@ private:
 
   bool filter(
     const PointCloud2ConstPtr & input,
+    PointCloud2 & no_ground_raw_output,
     PointCloud2 & no_ground_filter_output,
     PointCloud2 & all_filter_output);
 
