@@ -20,6 +20,7 @@
   <exec_depend>ros2launch</exec_depend>
   <exec_depend>rviz2</exec_depend>
   <exec_depend>rslidar_sdk</exec_depend>
+  <exec_depend>lslidar_driver</exec_depend>
   <exec_depend>lidar_leveling</exec_depend>
   <exec_depend>ground_segmentation</exec_depend>
 

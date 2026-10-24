@@ -45,8 +45,11 @@ colcon build --packages-select perception_common     # 首次：装上 bringup l
 #       + 调平 + 边坡/沟壑 + 地面滤除 + 聚类 + 警告融合 + front/rear 两个 rviz
 ros2 launch perception_common perception_bringup.launch.py
 
-# 数据源二选一：用真实雷达驱动（不下发 bag）
+# 数据源二选一：用真实雷达驱动（不下发 bag）——默认镭神 lslidar_driver
 ros2 launch perception_common perception_bringup.launch.py use_bag:=false
+
+# 切速腾 rslidar_sdk
+ros2 launch perception_common perception_bringup.launch.py use_bag:=false lidar_driver:=rslidar
 
 # 只跑链路不看图 / 换 bag / 不循环
 ros2 launch perception_common perception_bringup.launch.py start_rviz:=false
@@ -56,7 +59,8 @@ ros2 launch perception_common perception_bringup.launch.py \
 
 | 参数 | 默认 | 说明 |
 |---|---|---|
-| `use_bag` | `true` | `true` 回放 bag；`false` 启动 `rslidar_sdk` 雷达驱动 |
+| `use_bag` | `true` | `true` 回放 bag；`false` 启动真实雷达驱动（见 `lidar_driver`） |
+| `lidar_driver` | `lslidar` | `use_bag:=false` 时的驱动：`lslidar`=镭神（默认）；`rslidar`=速腾 |
 | `front_bag` / `rear_bag` | `rosbag2_stone_front` / `rosbag2_stone_rear` | bag 目录 |
 | `bag_loop` | `true` | bag 是否 `--loop` 循环播放 |
 | `bag_delay_s` | `3.0` | 延迟多久开始回放（等下游节点先就位） |

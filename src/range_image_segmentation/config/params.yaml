@@ -83,7 +83,7 @@ range_image_segmentation_rear:
 
     max_range: 12.0
     min_range: 0.2
-    gap_thresh: 1.0
+    gap_thresh: 1.5
     gap_slope: 0.15
     edge_max_range: 10.0
     cliff_min_elev: -8.0
@@ -103,7 +103,7 @@ range_image_segmentation_rear:
 
     horizontal_angle_min: -60.0
     horizontal_angle_max: 60.0
-    horizontal_res: 1.0
-    vertical_angle_min: -45.0
+    horizontal_res: 0.1
+    vertical_angle_min: -13.0
     vertical_angle_max: 0.0
-    vertical_res: 1.0
+    vertical_res: 0.05

@@ -55,9 +55,12 @@ warning_fusion:
     stop_on_danger: true       # false = 只告警不联动急停（首轮联调/纯显示场景）
     stop_debounce_frames: 2    # 触发：连续 N 帧原始告警才置 stop（1 = 不消抖，收到即触发）
     stop_release_debounce_frames: 2  # 解除：连续 N 个无危险周期才解除 stop（1 = 立即解除）
+    # 边坡急停距离滞回：进入 ≤ edge_danger_dist 即锁存报停，
+    # 边界退到 > edge_danger_dist + 该值 才解除（抑制阈值附近抖动导致的 stop 反复开关）
+    edge_stop_hysteresis_m: 0.2
     # 障碍物急停距离滞回：进入 ≤ obstacle_danger_dist 即锁存报停，
     # 目标退到 > obstacle_danger_dist + 该值 才解除（抑制阈值附近抖动导致的 stop 反复开关）
-    obstacle_stop_hysteresis_m: 0.5
+    obstacle_stop_hysteresis_m: 0.2
 
     # 运动方向镜像：仅用于日志标注（前进/后退/原地旋转/停车/无信号）；
     # 门控在检测实例内完成，融合本身与方向解耦，阈值须与检测实例保持一致

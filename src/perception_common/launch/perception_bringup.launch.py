@@ -3,7 +3,8 @@
 环节（对应 README 的启动步骤）：
   0) 数据源（二选一）
        use_bag:=true   回放 rosbag：rosbag2_stone_front / rosbag2_stone_rear
-       use_bag:=false  启动 rslidar_sdk 真实雷达驱动
+       use_bag:=false  启动真实雷达驱动：默认镭神 lslidar_driver（前后双雷达），
+                      lidar_driver:=rslidar 可切速腾 rslidar_sdk
        （两个 bag 里的话题名已是 /front/rslidar_points、/rear/rslidar_points，无需 remap）
   1) lidar_leveling       点云调平      /<side>/rslidar_points -> /<side>/rslidar_points_leveled
   2) range_image_segmentation    边坡/沟壑检测  -> /<side>/ditch_cloud、/<side>/ditch_line
@@ -20,8 +21,11 @@
   # 默认：回放 bag（前/后各一个，--loop）+ 全链路 + 两个 rviz
   ros2 launch perception_common perception_bringup.launch.py
 
-  # 真实雷达驱动（不下发 bag）
+  # 真实雷达驱动（不下发 bag）：默认镭神 lslidar_driver
   ros2 launch perception_common perception_bringup.launch.py use_bag:=false
+
+  # 切速腾 rslidar_sdk
+  ros2 launch perception_common perception_bringup.launch.py use_bag:=false lidar_driver:=rslidar
 
   # 换 bag / 不循环 / 调延迟
   ros2 launch perception_common perception_bringup.launch.py \\
@@ -116,17 +120,24 @@ def _launch_setup(context):
         else:
             actions.append(_warn('没有可播放的 rosbag，链路将收不到点云'))
     else:
-        actions.append(LogInfo(msg='[bringup] 数据源: rslidar_sdk 雷达驱动'))
-        actions.append(
-            Node(
-                package='rslidar_sdk',
-                executable='rslidar_sdk_node',
-                name='rslidar_sdk_node',
-                output='screen',
-                # 留空 = 用包内 config/config.yaml（与 `ros2 launch rslidar_sdk start.py` 一致）
-                parameters=[{'config_path': value('rslidar_config_path')}],
+        lidar_driver = value('lidar_driver').strip().lower()
+        if lidar_driver == 'rslidar':
+            actions.append(LogInfo(msg='[bringup] 数据源: rslidar_sdk 雷达驱动（速腾）'))
+            actions.append(
+                Node(
+                    package='rslidar_sdk',
+                    executable='rslidar_sdk_node',
+                    name='rslidar_sdk_node',
+                    output='screen',
+                    # 留空 = 用包内 config/config.yaml（与 `ros2 launch rslidar_sdk start.py` 一致）
+                    parameters=[{'config_path': value('rslidar_config_path')}],
+                )
             )
-        )
+        else:
+            # 默认镭神：前后各一个驱动节点 + lidar_status_monitor
+            # 话题 /front/rslidar_points、/rear/rslidar_points（与 bag 及下游链路一致）
+            actions.append(LogInfo(msg='[bringup] 数据源: lslidar_driver 雷达驱动（镭神，前后双雷达）'))
+            actions.append(_include('lslidar_driver', 'lslidar_ls_double_launch.py'))
 
     # ---------- 1~5) 感知链路 ----------
     actions.append(LogInfo(msg='[bringup] 1/5 点云调平: lidar_leveling'))
@@ -178,7 +189,12 @@ def generate_launch_description():
         # ---- 数据源 ----
         DeclareLaunchArgument(
             'use_bag', default_value='true',
-            description='true=回放 rosbag（离线）；false=启动 rslidar_sdk 真实雷达驱动',
+            description='true=回放 rosbag（离线）；false=启动真实雷达驱动（见 lidar_driver）',
+        ),
+        DeclareLaunchArgument(
+            'lidar_driver', default_value='lslidar',
+            description='use_bag:=false 时的雷达驱动：lslidar=镭神 lslidar_driver（默认）；'
+                        'rslidar=速腾 rslidar_sdk',
         ),
         DeclareLaunchArgument(
             'front_bag', default_value='rosbag2_stone_front',

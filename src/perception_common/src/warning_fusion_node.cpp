@@ -89,6 +89,9 @@ public:
     // 障碍物报警阈值：检测实例原始告警的 detected 只表示「检测到目标」并带实际距离，
     // 距离 ≤ obstacle_warn_dist 才作为威胁进入 /perception/obstacle_warning（报警收口在本节点）
     this->declare_parameter("obstacle_warn_dist", rclcpp::ParameterType::PARAMETER_DOUBLE);
+    // 边坡急停滞回量（米）：进入阈值 edge_danger_dist，解除阈值 edge_danger_dist + 该值，
+    // 抑制雷达点云在阈值附近抖动造成的 stop 反复开关（0 = 关闭滞回）
+    this->declare_parameter("edge_stop_hysteresis_m", 0.2);
     // 障碍物急停滞回量（米）：进入阈值 obstacle_danger_dist，解除阈值 obstacle_danger_dist + 该值，
     // 抑制雷达点云在阈值附近抖动造成的 stop 反复开关（0 = 关闭滞回）
     this->declare_parameter("obstacle_stop_hysteresis_m", 0.5);
@@ -109,20 +112,22 @@ public:
     this->get_parameter("edge_danger_dist", edge_danger_dist_);
     this->get_parameter("obstacle_danger_dist", obstacle_danger_dist_);
     this->get_parameter("obstacle_warn_dist", obstacle_warn_dist_);
+    this->get_parameter("edge_stop_hysteresis_m", edge_stop_hysteresis_m_);
     this->get_parameter("obstacle_stop_hysteresis_m", obstacle_stop_hysteresis_m_);
 
     if (!(heartbeat_hz_ > 0.0)) heartbeat_hz_ = 10.0;
     if (stop_debounce_frames_ < 1) stop_debounce_frames_ = 1;  // 1 = 触发不消抖，收到即置位
     if (stop_release_debounce_frames_ < 1) stop_release_debounce_frames_ = 1;  // 1 = 解除不消抖，立即解除
     if (!(edge_danger_dist_ > 0.0) || !(obstacle_danger_dist_ > 0.0) ||
-        !(obstacle_warn_dist_ > 0.0) || obstacle_stop_hysteresis_m_ < 0.0)
+        !(obstacle_warn_dist_ > 0.0) ||
+        edge_stop_hysteresis_m_ < 0.0 || obstacle_stop_hysteresis_m_ < 0.0)
     {
       RCLCPP_FATAL(this->get_logger(),
                    "阈值非法（edge_danger_dist=%.1f, obstacle_danger_dist=%.1f, "
-                   "obstacle_warn_dist=%.1f, hysteresis=%.1f）：须由 config/params.yaml 的 "
-                   "/** 共享段提供且 > 0（hysteresis ≥ 0）",
+                   "obstacle_warn_dist=%.1f, edge_hysteresis=%.1f, obstacle_hysteresis=%.1f）："
+                   "须由 config/params.yaml 的 /** 共享段提供且 > 0（hysteresis ≥ 0）",
                    edge_danger_dist_, obstacle_danger_dist_, obstacle_warn_dist_,
-                   obstacle_stop_hysteresis_m_);
+                   edge_stop_hysteresis_m_, obstacle_stop_hysteresis_m_);
       throw std::runtime_error("invalid danger thresholds");
     }
 
@@ -164,9 +169,10 @@ public:
                 edge_topic_.c_str(), obstacle_topic_.c_str(), stop_topic_.c_str(),
                 heartbeat_hz_, source_timeout_s_, gate_->cmdTopic().c_str());
     RCLCPP_INFO(this->get_logger(),
-                "急停联动: 边坡 DANGER(>%.1fm 内) / 障碍物报警≤%.1fm、急停≤%.1fm(滞回+%.1fm) → %s "
+                "急停联动: 边坡 DANGER(≤%.1fm, 滞回+%.1fm) / 障碍物报警≤%.1fm、急停≤%.1fm(滞回+%.1fm) → %s "
                 "(stop_on_danger=%s, 触发消抖=%d帧≈%.0fms, 解除消抖=%d帧≈%.0fms)",
-                edge_danger_dist_, obstacle_warn_dist_, obstacle_danger_dist_,
+                edge_danger_dist_, edge_stop_hysteresis_m_,
+                obstacle_warn_dist_, obstacle_danger_dist_,
                 obstacle_stop_hysteresis_m_, stop_topic_.c_str(),
                 stop_on_danger_ ? "true" : "false",
                 stop_debounce_frames_, 1000.0 * stop_debounce_frames_ / heartbeat_hz_,
@@ -349,10 +355,23 @@ private:
     pub_obstacle_->publish(obstacle_out);
 
     // ---------- ③ 急停：两类候选各自消抖后合并 ----------
+    // 边坡急停滞回：进入阈值 edge_danger_dist，解除阈值 edge_danger_dist + 滞回量。
+    // 一旦进入危险区即锁存报停，边界退到「危险区 + 滞回带」之外（> danger + hysteresis）才解除，
+    // 避免雷达点云在阈值附近抖动造成 stop 反复开关。
     const bool edge_danger = (edge_out.level == EdgeWarning::LEVEL_DANGER);
+    const bool edge_in_danger =
+        edge_danger && edge_out.dist_to_edge_m <= static_cast<float>(edge_danger_dist_);
+    const bool edge_in_hold =
+        edge_out.dist_to_edge_m <=
+        static_cast<float>(edge_danger_dist_ + edge_stop_hysteresis_m_);
+    if (edge_in_danger)
+      edge_stop_latched_ = true;   // 进入危险区 → 锁存
+    else if (!edge_in_hold)
+      edge_stop_latched_ = false;  // 退出危险区 + 滞回带 → 解除
+
     const uint64_t edge_key =
         (front_edge_wins ? front_edge_.seq : rear_edge_.seq) * 2u + (front_edge_wins ? 0u : 1u);
-    tick(debounce_edge_, edge_danger, edge_key);
+    tick(debounce_edge_, edge_stop_latched_, edge_key);
 
     // 障碍物急停滞回：进入阈值 obstacle_danger_dist，解除阈值 obstacle_danger_dist + 滞回量。
     // 一旦进入危险区即锁存报停，目标退到「危险区 + 滞回带」之外（> danger + hysteresis）才解除，
@@ -526,8 +545,10 @@ private:
   double edge_danger_dist_{0.0};      // 边坡 DANGER 阈值（米，仅供参考 confidence 换算）
   double obstacle_warn_dist_{0.0};    // 障碍物报警阈值（米）：原始告警 detected 只表示「检测到目标」
   double obstacle_danger_dist_{0.0};  // 障碍物急停阈值（米）
-  double obstacle_stop_hysteresis_m_{0.5};  // 障碍物急停滞回量（米），0 = 关闭滞回
-  bool obstacle_stop_latched_{false};       // 障碍物急停滞回锁存（进入危险区置位）
+  double edge_stop_hysteresis_m_{0.2};     // 边坡急停滞回量（米），0 = 关闭滞回
+  bool edge_stop_latched_{false};          // 边坡急停滞回锁存（进入危险区置位）
+  double obstacle_stop_hysteresis_m_{0.5}; // 障碍物急停滞回量（米），0 = 关闭滞回
+  bool obstacle_stop_latched_{false};      // 障碍物急停滞回锁存（进入危险区置位）
   bool last_stop_{false};             // 上一周期 stop 电平（仅用于状态翻转日志）
 };
 

@@ -113,11 +113,11 @@ ransac_ground_filter_rear:
 
     # ---- 扬尘过滤（单帧网格密度法）----
     enable_dust_filter: true
-    dust_filter_horiz_angle_resolution: 0.2   # 水平角分辨率（°）
-    dust_filter_vert_angle_resolution: 0.2    # 垂直角分辨率（°）
-    dust_filter_range_resolution: 0.4         # 近处基准距离分辨率（m）
+    dust_filter_horiz_angle_resolution: 1.0   # 水平角分辨率（°）
+    dust_filter_vert_angle_resolution: 1.0    # 垂直角分辨率（°）
+    dust_filter_range_resolution: 0.1         # 近处基准距离分辨率（m）
     dust_filter_range_growth: 0.02            # bin 宽随距离线性增长率（每米增加 0.02m）
-    dust_filter_min_density: 2                # 网格内点数 < 该阈值 → 判为扬尘剔除
+    dust_filter_min_density: 20                # 网格内点数 < 该阈值 → 判为扬尘剔除
 
     # ---- 扬尘网格可视化（调试）----
     debug_dust_grid: true                     # 是否在 RViz 画扬尘网格线
