@@ -68,3 +68,14 @@ warning_fusion:
     motion_v_thresh: 0.05
     motion_w_thresh: 0.05
     motion_timeout_s: 0.5
+
+    # ---- 调试辅助（on-vehicle 调试）----
+    # 停车报警触发/解除写入 stop_log_file；触发帧原始点云落盘为 PCD。
+    # 障碍物停车与边坡停车各只保留最新一个文件（覆盖写 obstacle_stop_latest.pcd /
+    # slope_stop_latest.pcd），避免控制器磁盘被占满。
+    front_raw_cloud_topic: "/front/rslidar_points"   # 前雷达原始点云（触发帧落盘来源）
+    rear_raw_cloud_topic: "/rear/rslidar_points"     # 后雷达原始点云（触发帧落盘来源）
+    raw_cloud_buffer_frames: 10     # 原始点云环形缓冲帧数（按 header.stamp 对齐触发帧）
+    stop_log_max_lines: 10          # 停车事件日志最多保留行数（≤0 = 不限制，纯追加）
+    pcd_save_dir: "./Log/pcd"       # 落盘目录；空 = $HOME/perception_stop_pcds
+    stop_log_file: "./Log/stop_events.log"     # 停车事件日志；空 = <pcd_save_dir>/stop_events.log

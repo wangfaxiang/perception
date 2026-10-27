@@ -482,6 +482,7 @@ bool RANSACGroundFilterComponent::transformPointCloud(
   pcl::transformPointCloud(pcl_cloud, pcl_transformed, mat);
   pcl::toROSMsg(pcl_transformed, *out_cloud_ptr);
   out_cloud_ptr->header.frame_id = in_target_frame;
+  out_cloud_ptr->header.stamp = in_cloud_ptr->header.stamp;  // 透传源点云时间戳（供停车触发帧对齐）
   return true;
 }
 

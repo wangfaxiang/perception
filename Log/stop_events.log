@@ -1,0 +1,10 @@
+[2026-10-27 16:45:46.209] 停车报警触发: reason=其他障碍物 desc=前雷达 前方 2.0m 障碍物(0.1×0.3m) 置信度=0.50 触发侧=front 源点云stamp=1793090746.104 取帧=精确匹配 点云=/home/promote/perception_stop_pcds/obstacle_stop_latest.pcd
+[2026-10-27 16:46:09.197] 停车报警解除: stop=false (边坡 SAFE / 障碍物 障碍物 2.2m)
+[2026-10-27 16:46:13.417] 停车报警触发: reason=其他障碍物 desc=前雷达 前方 2.0m 障碍物(0.1×0.3m) 置信度=0.50 触发侧=front 源点云stamp=1793090773.306 取帧=精确匹配 点云=/home/promote/perception_stop_pcds/obstacle_stop_latest.pcd
+[2026-10-27 16:46:20.498] 停车报警解除: stop=false (边坡 SAFE / 障碍物 障碍物 2.2m)
+[2026-10-27 16:48:43.897] 停车报警触发: reason=其他障碍物 desc=前雷达 前方 2.0m 障碍物(0.1×0.3m) 置信度=0.50 触发侧=front 源点云stamp=1793090923.819 取帧=精确匹配 点云=/home/promote/perception_stop_pcds/obstacle_stop_latest.pcd
+[2026-10-27 16:51:51.057] 停车报警触发: reason=其他障碍物 desc=前雷达 前方 1.9m 障碍物(0.2×0.3m) 置信度=0.50 触发侧=front 源点云stamp=1793091110.932 取帧=精确匹配 点云=./Log/pcd/obstacle_stop_latest.pcd
+[2026-10-27 16:52:16.250] 停车报警解除: stop=false (边坡 SAFE / 障碍物 障碍物 2.2m)
+[2026-10-27 16:52:18.656] 停车报警触发: reason=其他障碍物 desc=前雷达 前方 2.0m 障碍物(0.1×0.3m) 置信度=0.50 触发侧=front 源点云stamp=1793091138.534 取帧=精确匹配 点云=./Log/pcd/obstacle_stop_latest.pcd
+[2026-10-27 16:52:27.951] 停车报警解除: stop=false (边坡 SAFE / 障碍物 障碍物 2.2m)
+[2026-10-27 16:52:29.868] 停车报警触发: reason=其他障碍物 desc=前雷达 前方 2.0m 障碍物(0.1×0.3m) 置信度=0.50 触发侧=front 源点云stamp=1793091149.735 取帧=精确匹配 点云=./Log/pcd/obstacle_stop_latest.pcd

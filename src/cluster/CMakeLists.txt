@@ -16,6 +16,8 @@ find_package(pcl_conversions REQUIRED)
 find_package(box_msg REQUIRED)
 find_package(dth_messages REQUIRED)
 find_package(geometry_msgs REQUIRED)
+# 三维 PCA 包围盒需要 Eigen（PCL 本身依赖，这里显式声明）
+find_package(Eigen3 REQUIRED)
 # 共用件：运动方向门控头（<perception_common/motion_state.hpp>）
 find_package(perception_common REQUIRED)
 # uncomment the following section in order to fill in
@@ -25,6 +27,7 @@ include_directories(
   ${pcl_conversions_INCLUDE_DIRS}
   ${PCL_INCLUDE_DIRS}
   ${PCL_COMMON_INCLUDE_DIRS}
+  ${EIGEN3_INCLUDE_DIRS}
   include/${PROJECT_NAME}
 )
 

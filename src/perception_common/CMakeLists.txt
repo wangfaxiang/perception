@@ -14,9 +14,16 @@ find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(dth_messages REQUIRED)
+find_package(sensor_msgs REQUIRED)
+find_package(pcl_conversions REQUIRED)
+find_package(PCL REQUIRED)
 
 # 本包自身源码也要能 #include <perception_common/...>（对外由 ament_export_include_directories 提供）
-include_directories(include)
+include_directories(
+  include
+  ${pcl_conversions_INCLUDE_DIRS}
+  ${PCL_INCLUDE_DIRS}
+)
 
 # 共用头（仅头文件）：运动方向定向检测门控
 #   #include <perception_common/motion_state.hpp>
@@ -33,6 +40,12 @@ ament_target_dependencies(warning_fusion_node
   rclcpp
   geometry_msgs
   dth_messages
+  sensor_msgs
+  pcl_conversions
+)
+
+target_link_libraries(warning_fusion_node
+  ${PCL_LIBRARIES}
 )
 
 # Install

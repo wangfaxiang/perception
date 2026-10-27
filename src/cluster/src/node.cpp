@@ -1,5 +1,7 @@
 #include "node.hpp"
 #include <nlohmann/json.hpp>
+#include <Eigen/Dense>
+#include <Eigen/Eigenvalues>
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -302,16 +304,24 @@ visualization_msgs::msg::MarkerArray Cluster::boxsToMarkerArray(const box_msg::m
             default: r = v; g = p; bl = q; break;
         }
 
-        // 半箱尺寸与 8 个顶点（框无旋转，rt==0，轴对齐）
+        // 半箱尺寸与 8 个顶点（框绕 z 轴旋转 rt，尺寸沿框自身 u/v/z 轴）
         const float hx = b.w * 0.5f;
         const float hy = b.l * 0.5f;
         const float hz = b.h * 0.5f;
-        const float px[8] = {b.x - hx, b.x + hx, b.x + hx, b.x - hx,
-                             b.x - hx, b.x + hx, b.x + hx, b.x - hx};
-        const float py[8] = {b.y - hy, b.y - hy, b.y + hy, b.y + hy,
-                             b.y - hy, b.y - hy, b.y + hy, b.y + hy};
-        const float pz[8] = {b.z - hz, b.z - hz, b.z - hz, b.z - hz,
-                             b.z + hz, b.z + hz, b.z + hz, b.z + hz};
+        const float cosr = std::cos(b.rt);
+        const float sinr = std::sin(b.rt);
+        // 本地顶点（框自身坐标，轴对齐）
+        const float lx[8] = {-hx, hx, hx, -hx, -hx, hx, hx, -hx};
+        const float ly[8] = {-hy, -hy, hy, hy, -hy, -hy, hy, hy};
+        const float lz[8] = {-hz, -hz, -hz, -hz, hz, hz, hz, hz};
+        // 旋转到雷达坐标系（绕 z 轴 rt）
+        float px[8], py[8], pz[8];
+        for (int k = 0; k < 8; ++k)
+        {
+            px[k] = b.x + lx[k] * cosr - ly[k] * sinr;
+            py[k] = b.y + lx[k] * sinr + ly[k] * cosr;
+            pz[k] = b.z + lz[k];
+        }
 
         // 1) 半透明彩色面（保留体积感，内部点云仍可见）
         visualization_msgs::msg::Marker face =
@@ -322,6 +332,10 @@ visualization_msgs::msg::MarkerArray Cluster::boxsToMarkerArray(const box_msg::m
         face.scale.x = b.w;
         face.scale.y = b.l;
         face.scale.z = b.h;
+        face.pose.orientation.x = 0.0f;
+        face.pose.orientation.y = 0.0f;
+        face.pose.orientation.z = std::sin(b.rt * 0.5f);
+        face.pose.orientation.w = std::cos(b.rt * 0.5f);
         face.color.a = 0.35f;
         face.color.r = r;
         face.color.g = g;
@@ -375,8 +389,15 @@ visualization_msgs::msg::MarkerArray Cluster::boxsToMarkerArray(const box_msg::m
         text.pose.position.y = b.y;
         text.pose.position.z = b.z + hz + 0.3f;
         text.scale.z = 0.3;  // 字高（米）
+        // 包围盒到雷达原点(0,0)的水平最近距离：把原点变换到框局部 u/v 坐标，
+        // 求点到旋转矩形（范围 [-hx,hx]×[-hy,hy]）的最近距离（雷达在框内时为 0）
+        const float du = -(b.x * cosr + b.y * sinr);  // 原点沿框主轴 u 的偏移
+        const float dv = b.x * sinr - b.y * cosr;     // 原点沿框次轴 v 的偏移
+        const float dx = std::max(std::fabs(du) - hx, 0.0f);
+        const float dy = std::max(std::fabs(dv) - hy, 0.0f);
+        const float nearest = std::hypot(dx, dy);
         char label[64];
-        std::snprintf(label, sizeof(label), "%.1fm", std::hypot(b.x, b.y));
+        std::snprintf(label, sizeof(label), "%.1fm", nearest);
         text.text = label;
         text.color.a = 1.0f;
         text.color.r = 1.0f;
@@ -390,36 +411,26 @@ visualization_msgs::msg::MarkerArray Cluster::boxsToMarkerArray(const box_msg::m
 }
 
 // 计算单个簇的包围盒与最近点摘要（纯几何计算，不含任何过滤；过滤逻辑在 clustersToBoxs 内）
+// 包围盒由三维 PCA 主方向确定：取最大方差方向在水平面的投影作为框朝向（绕 z 轴 yaw），
+// 尺寸为点云沿水平主轴 / 水平次轴 / 竖直 z 轴的投影跨度，使包围盒在水平面贴合点云。
+// 注：box_msg/Box 仅有 rt（绕 z 轴 yaw），无法表达任意三维姿态，故竖直轴仍固定为 z。
 void Cluster::computeClusterBox(const pcl::PointIndices& indices,
                                 const pcl::PointCloud<pcl::PointXYZ>::ConstPtr& cloud,
                                 box_msg::msg::Box& boxs,
                                 BoxGeom& geom)
 {
-    bool first = true;
-    float min_x = 0.0f, min_y = 0.0f, min_z = 0.0f;
-    float max_x = 0.0f, max_y = 0.0f, max_z = 0.0f;
+    const size_t n = indices.indices.size();
+
     // 距离雷达最近的点（水平距离最小）—— 作为该簇的「威胁物位置」（契约 §5.3）
     float near_x = 0.0f, near_y = 0.0f, near_z = 0.0f;
     float near_dist = std::numeric_limits<float>::max();
+
+    // 质心（PCA 中心化用）
+    Eigen::Vector3f centroid = Eigen::Vector3f::Zero();
     for (const int index : indices.indices)
     {
         const pcl::PointXYZ& p = (*cloud)[index];
-        if (first)
-        {
-            min_x = max_x = p.x;
-            min_y = max_y = p.y;
-            min_z = max_z = p.z;
-            first = false;
-        }
-        else
-        {
-            min_x = std::min(min_x, p.x);
-            min_y = std::min(min_y, p.y);
-            min_z = std::min(min_z, p.z);
-            max_x = std::max(max_x, p.x);
-            max_y = std::max(max_y, p.y);
-            max_z = std::max(max_z, p.z);
-        }
+        centroid += Eigen::Vector3f(p.x, p.y, p.z);
         const float d = std::hypot(p.x, p.y);
         if (d < near_dist)
         {
@@ -429,18 +440,63 @@ void Cluster::computeClusterBox(const pcl::PointIndices& indices,
             near_z = p.z;
         }
     }
-    boxs.x = (min_x + max_x) / 2.0f;
-    boxs.y = (min_y + max_y) / 2.0f;
-    boxs.z = (min_z + max_z) / 2.0f;
-    boxs.w = max_x - min_x;
-    boxs.l = max_y - min_y;
+    centroid /= static_cast<float>(n);
+
+    // 三维协方差矩阵 → 特征分解（eigenvectors 按特征值升序排列，列为特征向量）
+    Eigen::Matrix3f cov = Eigen::Matrix3f::Zero();
+    for (const int index : indices.indices)
+    {
+        const pcl::PointXYZ& p = (*cloud)[index];
+        const Eigen::Vector3f d(p.x - centroid.x(), p.y - centroid.y(), p.z - centroid.z());
+        cov += d * d.transpose();
+    }
+    cov /= static_cast<float>(n);
+    Eigen::SelfAdjointEigenSolver<Eigen::Matrix3f> solver(cov);
+    const Eigen::Matrix3f evecs = solver.eigenvectors();
+
+    // 3D 主方向 = 最大方差方向（第 3 列）。框朝向约束为绕 z 轴，取其在水平面的投影为水平主轴 u
+    const Eigen::Vector3f e1 = evecs.col(2);
+    Eigen::Vector3f u(e1.x(), e1.y(), 0.0f);
+    float u_norm = u.norm();
+    if (u_norm < 1e-6f)
+    {
+        // 主方向接近竖直（如细高柱体）→ 水平投影退化，退回雷达 x 轴
+        u = Eigen::Vector3f(1.0f, 0.0f, 0.0f);
+        u_norm = 1.0f;
+    }
+    u /= u_norm;
+    const Eigen::Vector3f v(-u.y(), u.x(), 0.0f);  // 水平面内与 u 正交的次轴
+
+    // 点云投影到 u / v / z 三个正交轴求跨度（贴合点云的尺寸）
+    float min_u = std::numeric_limits<float>::max(), max_u = -std::numeric_limits<float>::max();
+    float min_v = std::numeric_limits<float>::max(), max_v = -std::numeric_limits<float>::max();
+    float min_z = std::numeric_limits<float>::max(), max_z = -std::numeric_limits<float>::max();
+    for (const int index : indices.indices)
+    {
+        const pcl::PointXYZ& p = (*cloud)[index];
+        const float pu = u.x() * p.x + u.y() * p.y;
+        const float pv = v.x() * p.x + v.y() * p.y;
+        min_u = std::min(min_u, pu); max_u = std::max(max_u, pu);
+        min_v = std::min(min_v, pv); max_v = std::max(max_v, pv);
+        min_z = std::min(min_z, p.z); max_z = std::max(max_z, p.z);
+    }
+
+    // 投影中心沿 u/v 的中点反算回雷达坐标系
+    const float cu = 0.5f * (min_u + max_u);
+    const float cv = 0.5f * (min_v + max_v);
+    boxs.x = cu * u.x() + cv * v.x();
+    boxs.y = cu * u.y() + cv * v.y();
+    boxs.z = 0.5f * (min_z + max_z);
+    boxs.w = max_u - min_u;
+    boxs.l = max_v - min_v;
     boxs.h = max_z - min_z;
-    boxs.rt = 0.0;
+    boxs.rt = std::atan2(u.y(), u.x());  // 框朝向：绕 z 轴的 yaw（弧度）
+
     geom.near_x = near_x;
     geom.near_y = near_y;
     geom.near_z = near_z;
     geom.near_dist = near_dist;
-    geom.points = indices.indices.size();
+    geom.points = n;
 }
 
 // 将全部聚类框转换成 Boxs（不做任何过滤）：供下游（如边坡检测）过滤障碍物内的假边缘使用
@@ -485,14 +541,14 @@ box_msg::msg::Boxs Cluster::clustersToBoxs(
 
         if (boxs.z > 0.0f && horizontal_dist >= 2.0f && horizontal_dist <= 4.0f)
         {
-            continue;
+            // continue;
         }
         if (density <= 100.0f && indices.indices.size() <= 500.0f)
         {
             // RCLCPP_INFO(this->get_logger(),
             //             "[cluster] points=%zu 包围盒垂直最高值 top_z=%.2f m, 密度=%.2f pts/m^2",
             //             indices.indices.size(), max_z, density);
-            continue;
+            // continue;
         }
         // 包围盒对角线长度
         const float diagonal = std::sqrt(boxs.w * boxs.w + boxs.l * boxs.l + boxs.h * boxs.h);
@@ -510,13 +566,13 @@ box_msg::msg::Boxs Cluster::clustersToBoxs(
             // RCLCPP_INFO(this->get_logger(),
             //             "[cluster] 大臂过滤: diagonal=%.2f m, x_min=%.2f m",
             //             diagonal, x_min);
-            continue;
+            // continue;
         }
         if (diagonal <= 0.20f)
         {
             // RCLCPP_INFO(this->get_logger(),
             //             "[cluster] 小目标过滤: diagonal=%.2f m", diagonal);
-            continue;
+            // continue;
         }
         boxarray.box.push_back(boxs);
         if (geoms)
@@ -669,7 +725,7 @@ void Cluster::onPointCloud(const sensor_msgs::msg::PointCloud2::ConstSharedPtr i
             publisher_cluster_region_rowing->publish(boxarray);
             publisher_cluster_region_rowing_marker->publish(boxsToMarkerArray(boxarray, input_msg->header.frame_id));
             if (obstacle_source_ == "region_rowing")
-                publishObstacleWarning(boxarray, geoms, input_msg->header.frame_id);
+                publishObstacleWarning(boxarray, geoms, input_msg->header);
         } catch (const std::runtime_error& e) { // 捕获异常
             std::cerr << "Caught exception: " << e.what() << std::endl;
         }     
@@ -701,7 +757,7 @@ void Cluster::onPointCloud(const sensor_msgs::msg::PointCloud2::ConstSharedPtr i
             publisher_cluster_euclidean->publish(boxarray);
             publisher_cluster_euclidean_marker->publish(boxsToMarkerArray(boxarray, input_msg->header.frame_id));
             if (obstacle_source_ == "euclidean")
-                publishObstacleWarning(boxarray, geoms, input_msg->header.frame_id);
+                publishObstacleWarning(boxarray, geoms, input_msg->header);
         } catch (const std::runtime_error& e) { // 捕获异常
             std::cerr << "Caught exception: " << e.what() << std::endl;
         }        
@@ -715,7 +771,7 @@ void Cluster::onPointCloud(const sensor_msgs::msg::PointCloud2::ConstSharedPtr i
 //   位置取簇内距雷达最近的点（而非包围盒中心）：对大体积/贴墙目标更保守。
 void Cluster::publishObstacleWarning(const box_msg::msg::Boxs& boxarray,
                                     const std::vector<BoxGeom>& geoms,
-                                    const std::string& frame_id)
+                                    const std_msgs::msg::Header& header)
 {
     dth_messages::msg::ObstacleWarning msg;
     int best = -1;
@@ -767,13 +823,14 @@ void Cluster::publishObstacleWarning(const box_msg::msg::Boxs& boxarray,
             obstacle_warn_dist_, obstacle_danger_dist_);
     }
 
-    // 位置即 frame_id 所声明的雷达系坐标（未做车体系变换，与系统侧约定：按 frame_id 自行变换）
-    msg.header.frame_id = frame_id;
+    // 透传源点云 header：frame_id = 雷达系坐标（系统侧按 frame_id 自行变换），
+    // stamp = 源点云时间戳（warning_fusion 用它精确对齐停车触发帧）。
+    msg.header = header;
 
     std::lock_guard<std::mutex> lock(obstacle_mutex_);
     cloud_seen_ = true;
     last_cloud_time_ = this->now();
-    publishObstacleLocked(msg);
+    publishObstacleLocked(msg, header.stamp);
     last_obstacle_ = msg;
 }
 
@@ -792,17 +849,18 @@ void Cluster::publishSafeObstacle()
     std::lock_guard<std::mutex> lock(obstacle_mutex_);
     cloud_seen_ = true;
     last_cloud_time_ = this->now();
-    publishObstacleLocked(msg);
+    publishObstacleLocked(msg, this->now());
     last_obstacle_ = msg;
 }
 
-// 填充 header.stamp 并发布（调用方需持有 obstacle_mutex_；frame_id 由调用方设定）
-// 契约 §4.3: header.stamp 必须每帧填节点时钟 now()（尊重 use_sim_time）
-void Cluster::publishObstacleLocked(dth_messages::msg::ObstacleWarning& msg)
+// 填充 header.stamp 并发布（调用方需持有 obstacle_mutex_；frame_id 由调用方设定）。
+// stamp 由调用方提供：有源点云时为源点云时间戳（供停车触发帧对齐），安全默认帧为 now()。
+void Cluster::publishObstacleLocked(dth_messages::msg::ObstacleWarning& msg,
+                                    const rclcpp::Time& stamp)
 {
-    msg.header.stamp = this->now();
+    msg.header.stamp = stamp;
     publisher_obstacle_warning->publish(msg);
-    last_obstacle_publish_time_ = msg.header.stamp;
+    last_obstacle_publish_time_ = this->now();  // 心跳判定用真实发布时间
 }
 
 // 心跳定时器: 与点云处理解耦，保证原始告警话题周期发布（契约 §4.3 ≥5Hz）。
@@ -832,7 +890,7 @@ void Cluster::onObstacleHeartbeat()
         safe.obstacle_y = 0.0f;
         safe.dist_m = 999.0f;
         safe.header.frame_id = frame_id_;
-        publishObstacleLocked(safe);
+        publishObstacleLocked(safe, now);
         return;
     }
 
@@ -845,8 +903,8 @@ void Cluster::onObstacleHeartbeat()
 
     if ((now - last_obstacle_publish_time_).seconds() >= obstacle_heartbeat_period_s_ * 1.5)
     {
-        dth_messages::msg::ObstacleWarning msg = last_obstacle_;  // 保留其 frame_id（雷达系）
-        publishObstacleLocked(msg);
+        dth_messages::msg::ObstacleWarning msg = last_obstacle_;  // 保留其 header（frame_id + 源点云时间戳）
+        publishObstacleLocked(msg, msg.header.stamp);
     }
 }
 

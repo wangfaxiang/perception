@@ -7,8 +7,8 @@
                       lidar_driver:=rslidar 可切速腾 rslidar_sdk
        （两个 bag 里的话题名已是 /front/rslidar_points、/rear/rslidar_points，无需 remap）
   1) lidar_leveling       点云调平      /<side>/rslidar_points -> /<side>/rslidar_points_leveled
-  2) range_image_segmentation    边坡/沟壑检测  -> /<side>/ditch_cloud、/<side>/ditch_line
-  3) ground_segmentation  地面点去除     -> /<side>/no_ground
+  2) ground_segmentation  地面点去除(含扬尘过滤) -> /<side>/no_ground_filter、/<side>/all_filter
+  3) range_image_segmentation    边坡/沟壑检测(输入 all_filter) -> /<side>/ditch_cloud、/<side>/ditch_line
   4) cluster              欧式聚类障碍物 -> /<side>/box/cluster/euclidean/marker
   5) warning_fusion       报警融合（/perception/{edge_warning,obstacle_warning,stop_command}
                           契约三话题的唯一发布者；因此 cluster.launch 里那份融合节点必须关掉）
@@ -143,11 +143,13 @@ def _launch_setup(context):
     actions.append(LogInfo(msg='[bringup] 1/5 点云调平: lidar_leveling'))
     actions.append(_include('lidar_leveling', 'lidar_leveling.launch.py'))
 
-    actions.append(LogInfo(msg='[bringup] 2/5 边坡/沟壑检测: range_image_segmentation'))
-    actions.append(_include('range_image_segmentation', 'range_image_segmentation.launch.py'))
-
-    actions.append(LogInfo(msg='[bringup] 3/5 地面点去除: ground_segmentation'))
+    # 地面去除(含扬尘过滤)在前：其输出 all_filter 是边坡检测的输入，
+    # 启动顺序不影响话题连接，但编号按真实数据流排列避免误导。
+    actions.append(LogInfo(msg='[bringup] 2/5 地面点去除(含扬尘过滤): ground_segmentation'))
     actions.append(_include('ground_segmentation', 'ransac_ground_filter.launch.py'))
+
+    actions.append(LogInfo(msg='[bringup] 3/5 边坡/沟壑检测: range_image_segmentation'))
+    actions.append(_include('range_image_segmentation', 'range_image_segmentation.launch.py'))
 
     # 融合节点由本文件统一启动，cluster 自带的那份必须关掉（契约话题只能有一个发布者）
     actions.append(LogInfo(msg='[bringup] 4/5 聚类障碍物检测: cluster（自带融合已关闭）'))

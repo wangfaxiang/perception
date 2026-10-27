@@ -539,11 +539,13 @@ private:
     pub_edge_line_->publish(array);
 
     // ---- 边坡告警（原始告警，由 warning_fusion 合并发布契约话题）----
-    publishEdgeWarning(edge_clustered);
+    publishEdgeWarning(edge_clustered, header);
   }
 
-  // 根据本帧边缘点云计算并发布原始边坡告警（由 warning_fusion 合并为契约话题）
-  void publishEdgeWarning(const pcl::PointCloud<pcl::PointXYZI> & edge)
+  // 根据本帧边缘点云计算并发布原始边坡告警（由 warning_fusion 合并为契约话题）。
+  // src_header 透传源点云 header：stamp 供停车触发帧对齐，frame_id 仍由 publishEdgeLocked 统一填。
+  void publishEdgeWarning(const pcl::PointCloud<pcl::PointXYZI> & edge,
+                          const std_msgs::msg::Header & src_header)
   {
     dth_messages::msg::EdgeWarning msg;
     if (!edge.empty()) {
@@ -581,7 +583,7 @@ private:
     std::lock_guard<std::mutex> lock(edge_mutex_);
     cloud_seen_ = true;
     last_cloud_time_ = this->now();
-    publishEdgeLocked(msg);
+    publishEdgeLocked(msg, src_header.stamp);
     last_edge_ = msg;
   }
 
@@ -597,17 +599,18 @@ private:
     std::lock_guard<std::mutex> lock(edge_mutex_);
     cloud_seen_ = true;
     last_cloud_time_ = this->now();
-    publishEdgeLocked(msg);
+    publishEdgeLocked(msg, this->now());
     last_edge_ = msg;
   }
 
-  // 填充 header 并发布（调用方需持有 edge_mutex_）
-  void publishEdgeLocked(dth_messages::msg::EdgeWarning & msg)
+  // 填充 header 并发布（调用方需持有 edge_mutex_）。
+  // stamp 由调用方提供：有源点云时为源点云时间戳（供停车触发帧对齐），安全默认帧为 now()。
+  void publishEdgeLocked(dth_messages::msg::EdgeWarning & msg, const rclcpp::Time & stamp)
   {
-    msg.header.stamp = this->now();
+    msg.header.stamp = stamp;
     msg.header.frame_id = frame_id_;
     pub_edge_->publish(msg);
-    last_edge_publish_time_ = msg.header.stamp;
+    last_edge_publish_time_ = this->now();  // 心跳判定用真实发布时间
   }
 
   // 心跳定时器：与点云处理解耦，保证原始告警周期发布（契约 §4.3 ≥5Hz）；
@@ -631,7 +634,7 @@ private:
       safe.warning = false;
       safe.dist_to_edge_m = 999.0f;
       safe.level = dth_messages::msg::EdgeWarning::LEVEL_SAFE;
-      publishEdgeLocked(safe);
+      publishEdgeLocked(safe, now);
       return;
     }
 
@@ -642,8 +645,8 @@ private:
     }
 
     if ((now - last_edge_publish_time_).seconds() >= edge_heartbeat_period_s_ * 1.5) {
-      dth_messages::msg::EdgeWarning msg = last_edge_;
-      publishEdgeLocked(msg);
+      dth_messages::msg::EdgeWarning msg = last_edge_;  // 保留其 header（frame_id + 源点云时间戳）
+      publishEdgeLocked(msg, msg.header.stamp);
     }
   }
 

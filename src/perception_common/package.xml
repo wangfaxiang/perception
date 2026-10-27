@@ -12,6 +12,8 @@
   <depend>rclcpp</depend>
   <depend>geometry_msgs</depend>
   <depend>dth_messages</depend>
+  <depend>sensor_msgs</depend>
+  <depend>pcl_conversions</depend>
 
   <!-- perception_bringup.launch.py 一键启动链路所需的运行期依赖。
        注意：不能在此声明 pothole_detection / cluster —— 它们反向依赖本包，

@@ -11,6 +11,7 @@
 #include <pcl/segmentation/extract_clusters.h>
 #include <pcl_conversions/pcl_conversions.h>
 #include <sensor_msgs/msg/point_cloud2.hpp>
+#include <std_msgs/msg/header.hpp>
 #include <pcl/common/common.h>
 #include <pcl/segmentation/region_growing.h>
 #include <pcl/features/normal_3d.h>
@@ -60,9 +61,10 @@ private:
     // 由 perception_common 包的 warning_fusion 取类别优先者合并为 /perception/obstacle_warning ----
     void publishObstacleWarning(const box_msg::msg::Boxs& boxarray,
                                const std::vector<BoxGeom>& geoms,
-                               const std::string& frame_id);
+                               const std_msgs::msg::Header& header);
     void publishSafeObstacle();
-    void publishObstacleLocked(dth_messages::msg::ObstacleWarning& msg);
+    void publishObstacleLocked(dth_messages::msg::ObstacleWarning& msg,
+                               const rclcpp::Time& stamp);
     void onObstacleHeartbeat();
     std::string describeThreat(const BoxGeom& geom, const box_msg::msg::Box& box) const;
     float cluster_tolerance;

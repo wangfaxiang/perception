@@ -42,12 +42,25 @@
 
 #include <perception_common/motion_state.hpp>
 
+#include <sensor_msgs/msg/point_cloud2.hpp>
+#include <pcl_conversions/pcl_conversions.h>
+#include <pcl/io/pcd_io.h>
+#include <pcl/point_types.h>
+
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstdio>
+#include <cstdlib>
+#include <ctime>
+#include <deque>
+#include <fstream>
+#include <limits>
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <sys/stat.h>
+#include <vector>
 
 class WarningFusion : public rclcpp::Node
 {
@@ -96,6 +109,14 @@ public:
     // 抑制雷达点云在阈值附近抖动造成的 stop 反复开关（0 = 关闭滞回）
     this->declare_parameter("obstacle_stop_hysteresis_m", 0.5);
 
+    // ---- 调试辅助（on-vehicle 调试）：停车事件日志 + 触发帧原始点云落盘 ----
+    this->declare_parameter<std::string>("front_raw_cloud_topic", "/front/rslidar_points");
+    this->declare_parameter<std::string>("rear_raw_cloud_topic", "/rear/rslidar_points");
+    this->declare_parameter<std::string>("pcd_save_dir", "");   // 空 = $HOME/perception_stop_pcds
+    this->declare_parameter<std::string>("stop_log_file", "");  // 空 = <pcd_save_dir>/stop_events.log
+    this->declare_parameter<int>("raw_cloud_buffer_frames", 10);  // 原始点云环形缓冲帧数（≥1）
+    this->declare_parameter<int>("stop_log_max_lines", 10);  // 日志最多保留行数（≤0 = 不限制）
+
     this->get_parameter("edge_warning_topic", edge_topic_);
     this->get_parameter("obstacle_warning_topic", obstacle_topic_);
     this->get_parameter("stop_command_topic", stop_topic_);
@@ -114,6 +135,14 @@ public:
     this->get_parameter("obstacle_warn_dist", obstacle_warn_dist_);
     this->get_parameter("edge_stop_hysteresis_m", edge_stop_hysteresis_m_);
     this->get_parameter("obstacle_stop_hysteresis_m", obstacle_stop_hysteresis_m_);
+    this->get_parameter("front_raw_cloud_topic", front_raw_topic_);
+    this->get_parameter("rear_raw_cloud_topic", rear_raw_topic_);
+    this->get_parameter("pcd_save_dir", pcd_save_dir_);
+    this->get_parameter("stop_log_file", stop_log_file_);
+    this->get_parameter("raw_cloud_buffer_frames", raw_buffer_frames_);
+    if (raw_buffer_frames_ < 1) raw_buffer_frames_ = 1;
+    this->get_parameter("stop_log_max_lines", stop_log_max_lines_);
+    resolveDebugPaths();
 
     if (!(heartbeat_hz_ > 0.0)) heartbeat_hz_ = 10.0;
     if (stop_debounce_frames_ < 1) stop_debounce_frames_ = 1;  // 1 = 触发不消抖，收到即置位
@@ -157,6 +186,16 @@ public:
         rear_obstacle_topic_, rclcpp::QoS(10),
         [this](ObstacleWarning::SharedPtr msg) { onSource(msg, rear_obstacle_); });
 
+    // 调试辅助：订阅前后雷达原始点云，按 header.stamp 环形缓冲最近若干帧，
+    // 停车触发时用「触发告警携带的源点云时间戳」精确取同一帧落盘。
+    // 镭神驱动发布为可靠 QoS(10)，用 rclcpp::QoS(10) 兼容可靠/尽力两种发布方。
+    sub_front_raw_ = this->create_subscription<sensor_msgs::msg::PointCloud2>(
+        front_raw_topic_, rclcpp::QoS(10),
+        [this](sensor_msgs::msg::PointCloud2::SharedPtr msg) { pushRaw(front_raw_buf_, msg); });
+    sub_rear_raw_ = this->create_subscription<sensor_msgs::msg::PointCloud2>(
+        rear_raw_topic_, rclcpp::QoS(10),
+        [this](sensor_msgs::msg::PointCloud2::SharedPtr msg) { pushRaw(rear_raw_buf_, msg); });
+
     timer_ = this->create_wall_timer(
         std::chrono::duration<double>(1.0 / heartbeat_hz_),
         std::bind(&WarningFusion::publishCycle, this));
@@ -177,9 +216,21 @@ public:
                 stop_on_danger_ ? "true" : "false",
                 stop_debounce_frames_, 1000.0 * stop_debounce_frames_ / heartbeat_hz_,
                 stop_release_debounce_frames_, 1000.0 * stop_release_debounce_frames_ / heartbeat_hz_);
+    RCLCPP_INFO(this->get_logger(),
+                "调试辅助: 停车事件日志=%s；触发帧原始点云目录=%s（障碍物/边坡各只保留最新一帧），"
+                "原始点云订阅[前 %s + 后 %s]",
+                stop_log_file_.c_str(), pcd_save_dir_.c_str(),
+                front_raw_topic_.c_str(), rear_raw_topic_.c_str());
   }
 
 private:
+  /// 原始点云环形缓冲帧（按 header.stamp 索引，供触发帧精确对齐）
+  struct RawFrame
+  {
+    sensor_msgs::msg::PointCloud2::SharedPtr cloud;
+    rclcpp::Time stamp;
+  };
+
   /// 一路来源（前 / 后）的最新原始告警
   template <typename T>
   struct Source
@@ -438,11 +489,38 @@ private:
         RCLCPP_WARN(this->get_logger(),
                     "急停触发: stop=true reason=%s (%s, 置信度 %.2f) —— 系统侧锁存，需操作员复位",
                     reasonName(reason), stop_msg.description.c_str(), stop_msg.confidence);
+
+        // ---- 调试辅助：停车触发 → 写事件日志 + 触发帧原始点云落盘 ----
+        // stop 的上升沿出现在「连续 stop_debounce_frames_ 帧危险」之后（默认 2 帧），
+        // 因此此处保存的正是第二帧报警对应的那一帧原始点云。
+        const bool is_slope = (reason == StopCommand::REASON_EDGE_DANGER);
+        const std::string side = is_slope ? (front_edge_wins ? "front" : "rear")
+                                          : (front_obstacle_wins ? "front" : "rear");
+        // 触发告警里透传的源点云时间戳（cluster/range_image 发布原始告警时填入），
+        // 用它在环形缓冲里精确取同一时刻的原始点云。
+        const rclcpp::Time src_stamp =
+            is_slope ? rclcpp::Time((front_edge_wins ? front_edge : rear_edge).header.stamp)
+                     : rclcpp::Time((front_obstacle_wins ? front_obstacle : rear_obstacle).header.stamp);
+        std::string match_note;
+        const std::string pcd_path = saveTriggerPcd(side, src_stamp, is_slope, match_note);
+
+        char line[640];
+        std::snprintf(line, sizeof(line),
+                      "停车报警触发: reason=%s desc=%s 置信度=%.2f 触发侧=%s 源点云stamp=%.3f 取帧=%s%s%s",
+                      reasonName(reason), stop_msg.description.c_str(), stop_msg.confidence,
+                      side.c_str(), src_stamp.seconds(), match_note.c_str(),
+                      pcd_path.empty() ? "" : " 点云=", pcd_path.c_str());
+        logStopEvent(line);
       }
       else
       {
         RCLCPP_INFO(this->get_logger(), "急停解除: stop=false (边坡 %s / 障碍物 %s)",
-                    levelName(edge_out.level), threatName(obstacle_out));
+                    levelName(edge_out.level), threatDistName(obstacle_out).c_str());
+
+        char line[256];
+        std::snprintf(line, sizeof(line), "停车报警解除: stop=false (边坡 %s / 障碍物 %s)",
+                      levelName(edge_out.level), threatDistName(obstacle_out).c_str());
+        logStopEvent(line);
       }
       last_stop_ = stop;
     }
@@ -466,6 +544,158 @@ private:
                   front_obstacle_wins ? "前" : "后",
                   last_stop_ ? "ON" : "off", reasonName(reason));
     RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 1000, "%s", buf);
+  }
+
+  /// 解析调试辅助的落盘目录与日志文件路径；目录不存在则创建（已存在返回 EEXIST，忽略）。
+  void resolveDebugPaths()
+  {
+    if (pcd_save_dir_.empty())
+    {
+      const char *home = std::getenv("HOME");
+      pcd_save_dir_ = (home && *home) ? std::string(home) + "/perception_stop_pcds"
+                                      : "/tmp/perception_stop_pcds";
+    }
+    if (stop_log_file_.empty())
+      stop_log_file_ = pcd_save_dir_ + "/stop_events.log";
+    ::mkdir(pcd_save_dir_.c_str(), 0755);
+  }
+
+  /// 原始点云入环形缓冲（按 header.stamp 索引，最多保留 raw_buffer_frames_ 帧）。
+  void pushRaw(std::deque<RawFrame> & buf, const sensor_msgs::msg::PointCloud2::SharedPtr & msg)
+  {
+    buf.push_back(RawFrame{msg, rclcpp::Time(msg->header.stamp)});
+    while (buf.size() > static_cast<size_t>(raw_buffer_frames_)) {
+      buf.pop_front();
+    }
+  }
+
+  /// 在环形缓冲里取与目标时间戳一致的帧：优先精确匹配，回退为时间最接近的一帧。
+  /// matched_dt 回填实际选中帧与目标的时间差（秒，负=早于目标，正=晚于目标）；
+  /// 精确匹配时为 0.0，缓冲为空时不动。
+  static sensor_msgs::msg::PointCloud2::SharedPtr pickRawFrame(
+      const std::deque<RawFrame> & buf, const rclcpp::Time & target, double * matched_dt)
+  {
+    // 1) 精确匹配：源点云时间戳沿链路透传，正常情况下应能找到同一帧
+    for (auto it = buf.rbegin(); it != buf.rend(); ++it) {
+      if (it->stamp == target) {
+        if (matched_dt) *matched_dt = 0.0;
+        return it->cloud;
+      }
+    }
+    // 2) 回退：时间最接近的一帧（时间戳链路异常或该帧已被移出缓冲时兜底）
+    const RawFrame * best = nullptr;
+    double best_dt = std::numeric_limits<double>::max();
+    for (const auto & f : buf) {
+      const double dt = (f.stamp - target).seconds();
+      if (std::fabs(dt) < std::fabs(best_dt)) {
+        best_dt = dt;
+        best = &f;
+      }
+    }
+    if (matched_dt) *matched_dt = best ? best_dt : 0.0;
+    return best ? best->cloud : nullptr;
+  }
+
+  /// 把触发帧原始点云写成 PCD（障碍物/边坡各只保留一个最新文件，覆盖写）。
+  /// 按触发告警透传的源点云时间戳在环形缓冲里取同一帧；
+  /// match_note 回填取帧结果（精确匹配 / 最近帧兜底 / 未找到 / 写盘失败）；
+  /// 成功返回绝对路径；该侧无缓冲点云或写失败时返回空串。
+  std::string saveTriggerPcd(const std::string & side, const rclcpp::Time & src_stamp,
+                             bool is_slope, std::string & match_note)
+  {
+    const auto & buf = (side == "front") ? front_raw_buf_ : rear_raw_buf_;
+    double dt = 0.0;
+    const auto raw = pickRawFrame(buf, src_stamp, &dt);
+    if (!raw)
+    {
+      match_note = "未找到(缓冲为空)";
+      RCLCPP_WARN(this->get_logger(),
+                  "停车触发但 %s 侧原始点云缓冲为空，跳过 PCD 落盘", side.c_str());
+      return "";
+    }
+    if (dt == 0.0)
+    {
+      match_note = "精确匹配";
+    }
+    else
+    {
+      // 兜底时把实际选中的那一帧时间戳与时间差一并写入日志，便于核对“接近”程度
+      char nb[128];
+      std::snprintf(nb, sizeof(nb), "最近帧兜底(Δ=%+.0fms, stamp=%.3f)",
+                    dt * 1000.0, rclcpp::Time(raw->header.stamp).seconds());
+      match_note = nb;
+    }
+    const std::string name = is_slope ? "slope_stop_latest.pcd" : "obstacle_stop_latest.pcd";
+    const std::string path = pcd_save_dir_ + "/" + name;
+    try
+    {
+      pcl::PCLPointCloud2 cloud;
+      pcl_conversions::toPCL(*raw, cloud);
+      pcl::PCDWriter writer;
+      if (writer.writeBinary(path, cloud) != 0)
+      {
+        match_note += "，但PCD写入失败";
+        RCLCPP_ERROR(this->get_logger(), "PCD 写入失败: %s", path.c_str());
+        return "";
+      }
+    }
+    catch (const std::exception & e)
+    {
+      match_note += "，但PCD写入异常";
+      RCLCPP_ERROR(this->get_logger(), "PCD 写入异常: %s (%s)", path.c_str(), e.what());
+      return "";
+    }
+    return path;
+  }
+
+  /// 追加一行到停车事件日志（自动带本地时间戳），并只保留最近 stop_log_max_lines_ 行。
+  /// stop_log_max_lines_ ≤ 0 表示不限制（纯追加）。
+  void logStopEvent(const std::string &line)
+  {
+    std::vector<std::string> keep_lines;
+    if (stop_log_max_lines_ > 0)
+    {
+      std::ifstream in(stop_log_file_);
+      std::string s;
+      while (std::getline(in, s))
+      {
+        if (!s.empty()) keep_lines.push_back(s);
+      }
+      in.close();
+      const size_t keep = stop_log_max_lines_ > 1 ? static_cast<size_t>(stop_log_max_lines_ - 1) : 0;
+      if (keep_lines.size() > keep)
+      {
+        keep_lines.erase(
+            keep_lines.begin(),
+            keep_lines.begin() + static_cast<std::ptrdiff_t>(keep_lines.size() - keep));
+      }
+    }
+
+    std::ofstream f(stop_log_file_,
+                    stop_log_max_lines_ > 0 ? (std::ios::out | std::ios::trunc) : std::ios::app);
+    if (!f.is_open())
+    {
+      RCLCPP_ERROR(this->get_logger(), "无法打开停车事件日志: %s", stop_log_file_.c_str());
+      return;
+    }
+    for (const auto & old : keep_lines) f << old << "\n";
+    f << localTimestamp() << " " << line << "\n";
+  }
+
+  /// 本地时间戳字符串 [YYYY-MM-DD HH:MM:SS.mmm]
+  static std::string localTimestamp()
+  {
+    using namespace std::chrono;
+    const auto now = system_clock::now();
+    const auto t = system_clock::to_time_t(now);
+    const auto ms = duration_cast<milliseconds>(now.time_since_epoch()).count() % 1000;
+    std::tm tm{};
+    localtime_r(&t, &tm);
+    char buf[80];
+    std::strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S", &tm);
+    char out[96];
+    std::snprintf(out, sizeof(out), "[%s.%03d]", buf, static_cast<int>(ms));
+    return std::string(out);
   }
 
   /// 置信度 [0,1]（契约 §5.1）：由距离线性换算——危险阈值处 0.5，越近越高（0m → 1.0）。
@@ -510,6 +740,16 @@ private:
     return isThreat(msg) ? typeName(msg.obstacle_type) : "无";
   }
 
+  /// 障碍物一路的日志名（含距离）：无威胁 → "无"，有威胁 → "类别 X.Xm"
+  static std::string threatDistName(const ObstacleWarning &msg)
+  {
+    if (!isThreat(msg)) return "无";
+    char buf[64];
+    std::snprintf(buf, sizeof(buf), "%s %.1fm", typeName(msg.obstacle_type),
+                  static_cast<double>(msg.dist_m));
+    return std::string(buf);
+  }
+
   static const char *reasonName(uint8_t reason)
   {
     switch (reason)
@@ -527,6 +767,11 @@ private:
   rclcpp::Publisher<StopCommand>::SharedPtr pub_stop_;
   rclcpp::Subscription<EdgeWarning>::SharedPtr sub_front_edge_, sub_rear_edge_;
   rclcpp::Subscription<ObstacleWarning>::SharedPtr sub_front_obstacle_, sub_rear_obstacle_;
+  rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr sub_front_raw_, sub_rear_raw_;
+  std::deque<RawFrame> front_raw_buf_, rear_raw_buf_;
+  int raw_buffer_frames_{10};
+  int stop_log_max_lines_{10};
+
   rclcpp::TimerBase::SharedPtr timer_;
   std::unique_ptr<perception_common::MotionGate> gate_;  // 仅用于日志标注运动方向
 
@@ -537,6 +782,8 @@ private:
   std::string edge_topic_, obstacle_topic_, stop_topic_;
   std::string front_edge_topic_, rear_edge_topic_;
   std::string front_obstacle_topic_, rear_obstacle_topic_;
+  std::string front_raw_topic_, rear_raw_topic_;
+  std::string pcd_save_dir_, stop_log_file_;
   std::string frame_id_;
   double heartbeat_hz_{10.0}, source_timeout_s_{0.5};
   bool stop_on_danger_{true};
