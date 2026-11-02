@@ -16,6 +16,8 @@
 
 #include <pcl/common/centroid.h>
 #include <pcl/common/transforms.h>
+#include <pcl/kdtree/kdtree_flann.h>
+#include <pcl/point_types.h>
 
 #include <sensor_msgs/point_cloud2_iterator.hpp>
 
@@ -206,19 +208,45 @@ RANSACGroundFilterComponent::RANSACGroundFilterComponent(const rclcpp::NodeOptio
   const std::string default_input_topic =
     lidar_name.empty() ? "/front/rslidar_points" : (prefix + "/rslidar_points_leveled");
   const std::string input_topic = declare_parameter<std::string>("input_topic", default_input_topic);
-  const std::string default_no_ground_filter_topic =
-    lidar_name.empty() ? "~/no_ground_filter" : (prefix + "/no_ground_filter");
-  const std::string no_ground_filter_topic =
-    declare_parameter<std::string>("no_ground_filter_topic", default_no_ground_filter_topic);
+  // 地面点云
+  const std::string default_ground_topic =
+    lidar_name.empty() ? "~/ground" : (prefix + "/ground");
+  const std::string ground_topic =
+    declare_parameter<std::string>("ground_topic", default_ground_topic);
+  // 过滤扬尘后的地上点云（聚类用）
+  const std::string default_upper_ground_filter_topic =
+    lidar_name.empty() ? "~/upper_ground_filter" : (prefix + "/upper_ground_filter");
+  const std::string upper_ground_filter_topic =
+    declare_parameter<std::string>("upper_ground_filter_topic", default_upper_ground_filter_topic);
+  // 地面 + 过滤后地上点云（边坡/沟壑检测用）
   const std::string default_all_filter_topic =
     lidar_name.empty() ? "~/all_filter" : (prefix + "/all_filter");
   const std::string all_filter_topic =
     declare_parameter<std::string>("all_filter_topic", default_all_filter_topic);
-  // 扬尘过滤前的非地面点云（调试观察用，不参与下游计算）
-  const std::string default_no_ground_raw_topic =
-    lidar_name.empty() ? "~/no_ground_raw" : (prefix + "/no_ground_raw");
-  const std::string no_ground_raw_topic =
-    declare_parameter<std::string>("no_ground_raw_topic", default_no_ground_raw_topic);
+  // 过滤扬尘前的地上点云（调试观察用，不参与下游计算）
+  const std::string default_upper_ground_raw_topic =
+    lidar_name.empty() ? "~/upper_ground_raw" : (prefix + "/upper_ground_raw");
+  const std::string upper_ground_raw_topic =
+    declare_parameter<std::string>("upper_ground_raw_topic", default_upper_ground_raw_topic);
+  // 地下点云
+  const std::string default_below_ground_topic =
+    lidar_name.empty() ? "~/below_ground" : (prefix + "/below_ground");
+  const std::string below_ground_topic =
+    declare_parameter<std::string>("below_ground_topic", default_below_ground_topic);
+  // 平滑输出（地面 + 过滤后地上的降采样 + 高度平滑点云）
+  const std::string default_smoothed_topic =
+    lidar_name.empty() ? "~/smoothed_upper_and_ground" : (prefix + "/smoothed_upper_and_ground");
+  const std::string smoothed_topic =
+    declare_parameter<std::string>("smoothed_topic", default_smoothed_topic);
+  // 平滑点云再分离：地面 / 非地面（地上）
+  const std::string default_smoothed_ground_topic =
+    lidar_name.empty() ? "~/smoothed_ground" : (prefix + "/smoothed_ground");
+  const std::string smoothed_ground_topic =
+    declare_parameter<std::string>("smoothed_ground_topic", default_smoothed_ground_topic);
+  const std::string default_smoothed_upper_topic =
+    lidar_name.empty() ? "~/smoothed_upper_ground" : (prefix + "/smoothed_upper_ground");
+  const std::string smoothed_upper_topic =
+    declare_parameter<std::string>("smoothed_upper_topic", default_smoothed_upper_topic);
 
   // 默认 base_frame 与雷达坐标系一致（调平后点云仍位于雷达坐标系）
   const std::string default_base_frame =
@@ -238,6 +266,15 @@ RANSACGroundFilterComponent::RANSACGroundFilterComponent(const rclcpp::NodeOptio
   use_adaptive_voxel_ = declare_parameter("use_adaptive_voxel", true);
   adaptive_voxel_ratio_ = declare_parameter("adaptive_voxel_ratio", 0.01);
   adaptive_voxel_max_size_ = declare_parameter("adaptive_voxel_max_size", 0.25);
+  enable_smoothed_output_ = declare_parameter("enable_smoothed_output", true);
+  smooth_leaf_size_ = declare_parameter("smooth_leaf_size", 0.2);
+  smooth_k_neighbors_ = declare_parameter("smooth_k_neighbors", 8);
+  // all_filter 发布前降采样 + 离群点过滤
+  enable_all_filter_downsample_ = declare_parameter("enable_all_filter_downsample", true);
+  all_filter_leaf_size_ = declare_parameter("all_filter_leaf_size", 0.1);
+  enable_all_filter_outlier_ = declare_parameter("enable_all_filter_outlier", true);
+  all_filter_outlier_mean_k_ = declare_parameter("all_filter_outlier_mean_k", 20);
+  all_filter_outlier_std_mul_ = declare_parameter("all_filter_outlier_std_mul", 1.0);
   height_threshold_ = declare_parameter("height_threshold", 0.01);
   max_range_ = declare_parameter("max_range", 6.0);
   debug_ = declare_parameter("debug", false);
@@ -284,11 +321,20 @@ RANSACGroundFilterComponent::RANSACGroundFilterComponent(const rclcpp::NodeOptio
   tf_listener_ = std::make_unique<tf2_ros::TransformListener>(*tf_buffer_);
 
   // Setup publishers and subscriber (subscription kept alive by node)
-  pub_no_ground_filter_ =
-    this->create_publisher<PointCloud2>(no_ground_filter_topic, rclcpp::QoS(10));
-  pub_no_ground_raw_ =
-    this->create_publisher<PointCloud2>(no_ground_raw_topic, rclcpp::QoS(10));
+  pub_ground_ = this->create_publisher<PointCloud2>(ground_topic, rclcpp::QoS(10));
+  pub_upper_ground_raw_ =
+    this->create_publisher<PointCloud2>(upper_ground_raw_topic, rclcpp::QoS(10));
+  pub_upper_ground_filter_ =
+    this->create_publisher<PointCloud2>(upper_ground_filter_topic, rclcpp::QoS(10));
+  pub_below_ground_ =
+    this->create_publisher<PointCloud2>(below_ground_topic, rclcpp::QoS(10));
   pub_all_filter_ = this->create_publisher<PointCloud2>(all_filter_topic, rclcpp::QoS(10));
+  pub_smoothed_merged_ =
+    this->create_publisher<PointCloud2>(smoothed_topic, rclcpp::QoS(10));
+  pub_smoothed_ground_ =
+    this->create_publisher<PointCloud2>(smoothed_ground_topic, rclcpp::QoS(10));
+  pub_smoothed_upper_ =
+    this->create_publisher<PointCloud2>(smoothed_upper_topic, rclcpp::QoS(10));
 
   if (debug_dust_grid_) {
     debug_dust_grid_pub_ = create_publisher<visualization_msgs::msg::MarkerArray>(
@@ -537,22 +583,95 @@ void RANSACGroundFilterComponent::applyRANSAC(
 void RANSACGroundFilterComponent::onPointCloud(const sensor_msgs::msg::PointCloud2 & input)
 {
   std::scoped_lock lock(mutex_);
-  PointCloud2::SharedPtr no_ground_filtered(new PointCloud2);
-  PointCloud2::SharedPtr no_ground_raw(new PointCloud2);
+  PointCloud2::SharedPtr ground(new PointCloud2);
+  PointCloud2::SharedPtr upper_ground_raw(new PointCloud2);
+  PointCloud2::SharedPtr upper_ground_filtered(new PointCloud2);
+  PointCloud2::SharedPtr below_ground(new PointCloud2);
   PointCloud2::SharedPtr all_filtered(new PointCloud2);
+  PointCloud2::SharedPtr smoothed_merged(new PointCloud2);
+  PointCloud2::SharedPtr smoothed_ground(new PointCloud2);
+  PointCloud2::SharedPtr smoothed_upper(new PointCloud2);
   auto input_ptr = std::make_shared<const sensor_msgs::msg::PointCloud2>(input);
-  if (!filter(input_ptr, *no_ground_raw, *no_ground_filtered, *all_filtered)) {
+  if (!filter(
+        input_ptr, *ground, *upper_ground_raw, *upper_ground_filtered, *below_ground,
+        *all_filtered)) {
     return;
   }
-  pub_no_ground_raw_->publish(*no_ground_raw);
-  pub_no_ground_filter_->publish(*no_ground_filtered);
-  pub_all_filter_->publish(*all_filtered);
+  pub_ground_->publish(*ground);
+  pub_upper_ground_raw_->publish(*upper_ground_raw);
+  pub_upper_ground_filter_->publish(*upper_ground_filtered);
+  pub_below_ground_->publish(*below_ground);
+
+  // 平滑：对 all_filter（地面 + 地下）做降采样 + 高度平滑，并分离出平滑地面点
+  processSmoothedCloud(*all_filtered, *smoothed_merged, *smoothed_ground, *smoothed_upper);
+
+  // all_filter = 平滑地面点(smoothed_ground) + 地下点(below_ground)，供边坡/悬崖检测；
+  // 拟合不到平面时保底使用整帧除尘结果
+  PointCloud2::SharedPtr all_filter_combined(new PointCloud2);
+  if (has_valid_plane_) {
+    *all_filter_combined = concatenateClouds(*smoothed_ground, *below_ground);
+  } else {
+    *all_filter_combined = *all_filtered;
+  }
+  all_filter_combined->header.frame_id = base_frame_;
+
+  // 发布 all_filter 前：体素降采样 + 统计离群点过滤（PointXYZI，保留 intensity）
+  PointCloud2::SharedPtr all_filter_pub(new PointCloud2);
+  {
+    pcl::PointCloud<pcl::PointXYZI> pcl_all;
+    pcl::fromROSMsg(*all_filter_combined, pcl_all);
+
+    pcl::PointCloud<pcl::PointXYZI> pcl_work;
+    if (enable_all_filter_downsample_ && all_filter_leaf_size_ > 0.0) {
+      pcl::VoxelGrid<pcl::PointXYZI> vg;
+      vg.setInputCloud(pcl_all.makeShared());
+      vg.setLeafSize(
+        static_cast<float>(all_filter_leaf_size_), static_cast<float>(all_filter_leaf_size_),
+        static_cast<float>(all_filter_leaf_size_));
+      vg.filter(pcl_work);
+    } else {
+      pcl_work = pcl_all;
+    }
+
+    // 统计离群点过滤：剔除 k 近邻平均距离明显偏大的孤立点（扬尘残留等）
+    if (enable_all_filter_outlier_ &&
+        pcl_work.size() > static_cast<size_t>(all_filter_outlier_mean_k_))
+    {
+      pcl::StatisticalOutlierRemoval<pcl::PointXYZI> sor;
+      sor.setInputCloud(pcl_work.makeShared());
+      sor.setMeanK(all_filter_outlier_mean_k_);
+      sor.setStddevMulThresh(all_filter_outlier_std_mul_);
+      pcl::PointCloud<pcl::PointXYZI> pcl_filtered;
+      sor.filter(pcl_filtered);
+      pcl_work = pcl_filtered;
+    }
+
+    pcl::toROSMsg(pcl_work, *all_filter_pub);
+    all_filter_pub->header = all_filter_combined->header;
+  }
+  pub_all_filter_->publish(*all_filter_pub);
+
+  // 平滑话题发布：smoothed_upper 改为地上点平滑（地面以上点）
+  if (enable_smoothed_output_) {
+    pcl::PointCloud<pcl::PointXYZI> upper_pcl;
+    pcl::fromROSMsg(*upper_ground_filtered, upper_pcl);
+    pcl::PointCloud<pcl::PointXYZI> upper_smoothed;
+    smoothHeightCloud(upper_pcl, upper_smoothed);
+    pcl::toROSMsg(upper_smoothed, *smoothed_upper);
+    smoothed_upper->header = upper_ground_filtered->header;
+
+    pub_smoothed_merged_->publish(*smoothed_merged);
+    pub_smoothed_ground_->publish(*smoothed_ground);
+    pub_smoothed_upper_->publish(*smoothed_upper);
+  }
 }
 
 bool RANSACGroundFilterComponent::filter(
   const PointCloud2::ConstSharedPtr & input,
-  PointCloud2 & no_ground_raw_output,
-  PointCloud2 & no_ground_filter_output,
+  PointCloud2 & ground_output,
+  PointCloud2 & upper_ground_raw_output,
+  PointCloud2 & upper_ground_filter_output,
+  PointCloud2 & below_ground_output,
   PointCloud2 & all_filter_output)
 {
   sensor_msgs::msg::PointCloud2::SharedPtr input_transformed_ptr(new sensor_msgs::msg::PointCloud2);
@@ -657,10 +776,18 @@ bool RANSACGroundFilterComponent::filter(
     RCLCPP_WARN_THROTTLE(
       this->get_logger(), *this->get_clock(), std::chrono::milliseconds(1000).count(),
       "failed to find a plane");
-    // 找不到平面：无法划分地面，把整帧作为非地面（保底，不删点）
-    no_ground_raw_output = *input_transformed_ptr;
-    no_ground_filter_output = *input_transformed_ptr;
-    all_filter_output = *input_transformed_ptr;
+    // 找不到平面：无法划分，整帧作为地上点云（保底，不删点），地面/地下为空；
+    // all_filter 对整个点云做扬尘过滤后输出
+    has_valid_plane_ = false;
+    ground_output = sensor_msgs::msg::PointCloud2{};
+    below_ground_output = sensor_msgs::msg::PointCloud2{};
+    upper_ground_raw_output = *input_transformed_ptr;
+    upper_ground_filter_output = *input_transformed_ptr;
+    if (enable_dust_filter_) {
+      applyDustFilter(*input_transformed_ptr, all_filter_output);
+    } else {
+      all_filter_output = *input_transformed_ptr;
+    }
     return true;
   }
 
@@ -672,10 +799,18 @@ bool RANSACGroundFilterComponent::filter(
       std::acos(plane_normal.dot(unit_vec_) / (plane_normal.norm() * unit_vec_.norm())) * 180 /
       M_PI);
     if (plane_slope > plane_slope_threshold_) {
-      // 平面过倾：不误删，整帧作为非地面
-      no_ground_raw_output = *input_transformed_ptr;
-      no_ground_filter_output = *input_transformed_ptr;
-      all_filter_output = *input_transformed_ptr;
+      // 平面过倾：不误删，整帧作为地上点云，地面/地下为空；
+      // all_filter 对整个点云做扬尘过滤后输出
+      has_valid_plane_ = false;
+      ground_output = sensor_msgs::msg::PointCloud2{};
+      below_ground_output = sensor_msgs::msg::PointCloud2{};
+      upper_ground_raw_output = *input_transformed_ptr;
+      upper_ground_filter_output = *input_transformed_ptr;
+      if (enable_dust_filter_) {
+        applyDustFilter(*input_transformed_ptr, all_filter_output);
+      } else {
+        all_filter_output = *input_transformed_ptr;
+      }
       return true;
     }
   }
@@ -687,60 +822,78 @@ bool RANSACGroundFilterComponent::filter(
     downsampled_cloud, *inliers, segment_ground_cloud_ptr, segment_no_ground_cloud_ptr);
   const Eigen::Affine3d plane_affine = getPlaneAffine(*segment_ground_cloud_ptr, plane_normal);
   const Eigen::Affine3d plane_affine_inv = plane_affine.inverse();
+  plane_affine_inv_ = plane_affine_inv;
+  has_valid_plane_ = true;
 
-  // 对“调平后原始点云”逐点划分地面/非地面（全分辨率、逐字节保留字段、不删除任何点）：
-  //   - 有限点且水平距离 ≤ max_range_：按 RANSAC 平面距离判定，|z'| ≤ height_threshold_ → 地面；
-  //   - 水平距离 > max_range_ 或非有限点：归入非地面（保底）。
+  // 对“调平后原始点云”逐点三分：地面 / 地上 / 地下（全分辨率、逐字节保留字段、不删除任何点）：
+  //   - 有限点（不限水平距离，超 max_range_ 的远处点也用 RANSAC 平面外推高度判定）：
+  //       |z'| ≤  height_threshold_ → 地面
+  //        z'  >  height_threshold_ → 地上
+  //        z'  < -height_threshold_ → 地下
+  //   - 非有限点：无法判定，归入地上（保底，后续扬尘过滤仍可保留真实障碍物）。
   sensor_msgs::PointCloud2ConstIterator<float> it_x(*input_transformed_ptr, "x");
   sensor_msgs::PointCloud2ConstIterator<float> it_y(*input_transformed_ptr, "y");
   sensor_msgs::PointCloud2ConstIterator<float> it_z(*input_transformed_ptr, "z");
 
   std::vector<size_t> ground_idx;
-  std::vector<size_t> no_ground_idx;
+  std::vector<size_t> upper_ground_idx;
+  std::vector<size_t> below_ground_idx;
   const size_t num_points =
     static_cast<size_t>(input_transformed_ptr->width) * input_transformed_ptr->height;
   ground_idx.reserve(num_points);
-  no_ground_idx.reserve(num_points);
+  upper_ground_idx.reserve(num_points);
+  below_ground_idx.reserve(num_points);
 
   size_t i = 0;
   for (; it_x != it_x.end(); ++it_x, ++it_y, ++it_z, ++i) {
     const float x = *it_x, y = *it_y, z = *it_z;
-    bool is_ground = false;
-    if (std::isfinite(x) && std::isfinite(y) && std::isfinite(z) &&
-      x * x + y * y <= max_range_squared)
-    {
-      const Eigen::Vector3d transformed_point = plane_affine_inv * Eigen::Vector3d(x, y, z);
-      is_ground = std::abs(transformed_point.z()) <= height_threshold_;
+    if (!std::isfinite(x) || !std::isfinite(y) || !std::isfinite(z)) {
+      // 非有限点：无法判定，保底归地上
+      upper_ground_idx.push_back(i);
+      continue;
     }
-    if (is_ground) {
+    // 方法一：所有有限点（含超 max_range_ 的远处点）均按 RANSAC 平面外推高度判定
+    const Eigen::Vector3d transformed_point = plane_affine_inv * Eigen::Vector3d(x, y, z);
+    const double z_plane = transformed_point.z();
+    if (std::abs(z_plane) <= height_threshold_) {
       ground_idx.push_back(i);
+    } else if (z_plane > height_threshold_) {
+      upper_ground_idx.push_back(i);
     } else {
-      no_ground_idx.push_back(i);
+      below_ground_idx.push_back(i);
     }
   }
 
-  // 地面点云 / 非地面点云（全分辨率，保留 intensity 等原始字段）
+  // 地面 / 地上 / 地下点云（全分辨率，保留 intensity 等原始字段）
   sensor_msgs::msg::PointCloud2 ground_cloud =
     buildCloudFromIndices(*input_transformed_ptr, ground_idx);
-  sensor_msgs::msg::PointCloud2 no_ground_cloud =
-    buildCloudFromIndices(*input_transformed_ptr, no_ground_idx);
+  sensor_msgs::msg::PointCloud2 upper_ground_cloud =
+    buildCloudFromIndices(*input_transformed_ptr, upper_ground_idx);
+  sensor_msgs::msg::PointCloud2 below_ground_cloud =
+    buildCloudFromIndices(*input_transformed_ptr, below_ground_idx);
 
-  // 扬尘过滤前的非地面点云：单独发布（调试观察用，供对比过滤效果）
-  no_ground_raw_output = no_ground_cloud;
+  ground_output = ground_cloud;
+  ground_output.header.frame_id = base_frame_;
 
-  // 对非地面点云做扬尘过滤
-  sensor_msgs::msg::PointCloud2 no_ground_filtered;
+  below_ground_output = below_ground_cloud;
+  below_ground_output.header.frame_id = base_frame_;
+
+  // 扬尘过滤前的地上点云：单独发布（调试观察用，供对比过滤效果）
+  upper_ground_raw_output = upper_ground_cloud;
+
+  // 仅对地上点云做扬尘过滤
+  sensor_msgs::msg::PointCloud2 upper_ground_filtered;
   if (enable_dust_filter_) {
-    applyDustFilter(no_ground_cloud, no_ground_filtered);
+    applyDustFilter(upper_ground_cloud, upper_ground_filtered);
   } else {
-    no_ground_filtered = no_ground_cloud;
+    upper_ground_filtered = upper_ground_cloud;
   }
 
-  // 合并：地面点云 + 过滤后的非地面点云（同一帧、同一坐标系、字段一致）
-  all_filter_output = concatenateClouds(ground_cloud, no_ground_filtered);
+  // 合并：地面点云 + 地下点云（同一帧、同一坐标系、字段一致，供边坡/沟壑检测）
+  all_filter_output = concatenateClouds(ground_cloud, below_ground_cloud);
 
-  no_ground_filter_output = no_ground_filtered;
-  no_ground_filter_output.header.frame_id = base_frame_;
+  upper_ground_filter_output = upper_ground_filtered;
+  upper_ground_filter_output.header.frame_id = base_frame_;
   all_filter_output.header.frame_id = base_frame_;
 
   // output debug plane coords and ground pointcloud when debug flag is set
@@ -753,6 +906,112 @@ bool RANSACGroundFilterComponent::filter(
   }
 
   return true;
+}
+
+void RANSACGroundFilterComponent::smoothHeightCloud(
+  const pcl::PointCloud<pcl::PointXYZI> & input, pcl::PointCloud<pcl::PointXYZI> & output)
+{
+  output.clear();
+  if (input.empty()) {
+    return;
+  }
+
+  // 1) 体素降采样（VoxelGrid 对体素内点求质心，intensity 取平均，强度得以保留）
+  pcl::PointCloud<pcl::PointXYZI>::Ptr downsampled(new pcl::PointCloud<pcl::PointXYZI>);
+  if (smooth_leaf_size_ > 0.0) {
+    pcl::VoxelGrid<pcl::PointXYZI> vg;
+    vg.setInputCloud(input.makeShared());
+    vg.setLeafSize(
+      static_cast<float>(smooth_leaf_size_), static_cast<float>(smooth_leaf_size_),
+      static_cast<float>(smooth_leaf_size_));
+    vg.filter(*downsampled);
+  } else {
+    *downsampled = input;
+  }
+
+  if (downsampled->empty()) {
+    return;
+  }
+
+  // 2) 水平方向邻居高度平均：把 z 置 0 构建 2D kdtree，找 k 个水平最近邻，取 z 平均
+  //    （只平滑高度，intensity 保持降采样后的值）
+  pcl::PointCloud<pcl::PointXYZI>::Ptr cloud_xy(new pcl::PointCloud<pcl::PointXYZI>);
+  cloud_xy->resize(downsampled->size());
+  for (std::size_t i = 0; i < downsampled->size(); ++i) {
+    (*cloud_xy)[i] = (*downsampled)[i];
+    (*cloud_xy)[i].z = 0.0f;
+  }
+
+  pcl::KdTreeFLANN<pcl::PointXYZI> kdtree;
+  kdtree.setInputCloud(cloud_xy);
+
+  const int k = std::max(1, smooth_k_neighbors_);
+  output.resize(downsampled->size());
+  std::vector<int> neighbors(k);
+  std::vector<float> dist2(k);
+
+  for (std::size_t i = 0; i < downsampled->size(); ++i) {
+    const auto & p = (*downsampled)[i];
+    float z_sum = p.z;
+    int count = 1;
+    const int found = kdtree.nearestKSearch((*cloud_xy)[i], k, neighbors, dist2);
+    for (int j = 0; j < found; ++j) {
+      if (neighbors[j] != static_cast<int>(i)) {
+        z_sum += (*downsampled)[neighbors[j]].z;
+        ++count;
+      }
+    }
+    output[i] = p;  // 保留 intensity 等字段
+    output[i].z = z_sum / static_cast<float>(count);
+  }
+  output.width = output.size();
+  output.height = 1;
+  output.is_dense = true;
+}
+
+void RANSACGroundFilterComponent::processSmoothedCloud(
+  const sensor_msgs::msg::PointCloud2 & all_filter,
+  PointCloud2 & smoothed_merged,
+  PointCloud2 & smoothed_ground,
+  PointCloud2 & smoothed_upper)
+{
+  // 1) 平滑（降采样 + 水平邻域高度平均）
+  pcl::PointCloud<pcl::PointXYZI> pcl_all;
+  pcl::fromROSMsg(all_filter, pcl_all);
+  pcl::PointCloud<pcl::PointXYZI> pcl_smoothed;
+  smoothHeightCloud(pcl_all, pcl_smoothed);
+
+  pcl::toROSMsg(pcl_smoothed, smoothed_merged);
+  smoothed_merged.header = all_filter.header;
+
+  // 2) 用本帧 RANSAC 平面把平滑点云再分离为地面 / 非地面（地上）
+  pcl::PointCloud<pcl::PointXYZI> pcl_ground;
+  pcl::PointCloud<pcl::PointXYZI> pcl_upper;
+  pcl_ground.reserve(pcl_smoothed.size());
+  pcl_upper.reserve(pcl_smoothed.size());
+  for (const auto & p : pcl_smoothed.points) {
+    bool is_ground = false;
+    if (has_valid_plane_) {
+      const Eigen::Vector3d tp = plane_affine_inv_ * Eigen::Vector3d(p.x, p.y, p.z);
+      is_ground = std::abs(tp.z()) <= height_threshold_;
+    }
+    if (is_ground) {
+      pcl_ground.push_back(p);
+    } else {
+      pcl_upper.push_back(p);
+    }
+  }
+  pcl_ground.width = pcl_ground.size();
+  pcl_ground.height = 1;
+  pcl_ground.is_dense = true;
+  pcl_upper.width = pcl_upper.size();
+  pcl_upper.height = 1;
+  pcl_upper.is_dense = true;
+
+  pcl::toROSMsg(pcl_ground, smoothed_ground);
+  pcl::toROSMsg(pcl_upper, smoothed_upper);
+  smoothed_ground.header = all_filter.header;
+  smoothed_upper.header = all_filter.header;
 }
 
 void RANSACGroundFilterComponent::applyDustFilter(
@@ -866,6 +1125,35 @@ rcl_interfaces::msg::SetParametersResult RANSACGroundFilterComponent::paramCallb
   }
   if (get_param(p, "adaptive_voxel_max_size", adaptive_voxel_max_size_)) {
     RCLCPP_DEBUG(get_logger(), "Setting adaptive_voxel_max_size to: %lf.", adaptive_voxel_max_size_);
+  }
+  if (get_param(p, "enable_smoothed_output", enable_smoothed_output_)) {
+    RCLCPP_DEBUG(get_logger(), "Setting enable_smoothed_output to: %d.", enable_smoothed_output_);
+  }
+  if (get_param(p, "smooth_leaf_size", smooth_leaf_size_)) {
+    RCLCPP_DEBUG(get_logger(), "Setting smooth_leaf_size to: %lf.", smooth_leaf_size_);
+  }
+  if (get_param(p, "smooth_k_neighbors", smooth_k_neighbors_)) {
+    RCLCPP_DEBUG(get_logger(), "Setting smooth_k_neighbors to: %d.", smooth_k_neighbors_);
+  }
+  if (get_param(p, "enable_all_filter_downsample", enable_all_filter_downsample_)) {
+    RCLCPP_DEBUG(
+      get_logger(), "Setting enable_all_filter_downsample to: %d.",
+      enable_all_filter_downsample_);
+  }
+  if (get_param(p, "all_filter_leaf_size", all_filter_leaf_size_)) {
+    RCLCPP_DEBUG(get_logger(), "Setting all_filter_leaf_size to: %lf.", all_filter_leaf_size_);
+  }
+  if (get_param(p, "enable_all_filter_outlier", enable_all_filter_outlier_)) {
+    RCLCPP_DEBUG(
+      get_logger(), "Setting enable_all_filter_outlier to: %d.", enable_all_filter_outlier_);
+  }
+  if (get_param(p, "all_filter_outlier_mean_k", all_filter_outlier_mean_k_)) {
+    RCLCPP_DEBUG(
+      get_logger(), "Setting all_filter_outlier_mean_k to: %d.", all_filter_outlier_mean_k_);
+  }
+  if (get_param(p, "all_filter_outlier_std_mul", all_filter_outlier_std_mul_)) {
+    RCLCPP_DEBUG(
+      get_logger(), "Setting all_filter_outlier_std_mul to: %lf.", all_filter_outlier_std_mul_);
   }
 
   {

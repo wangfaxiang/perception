@@ -1,6 +1,6 @@
 # 障碍物聚类（cluster）检测实例参数 —— 前/后雷达各一段（节点名 = launch 里的 cluster_front / cluster_rear）
 #
-# 输入：ransac 地面过滤 + 扬尘过滤后的非地面点云（/front/no_ground_filter、/rear/no_ground_filter）
+# 输入：ransac 地面过滤 + 扬尘过滤后的地上点云（/front/upper_ground_filter、/rear/upper_ground_filter）
 # 输出：
 #   /<lidar>/box/cluster/{euclidean,region_rowing}         过滤后包围盒（报警用，box_msg）
 #   /<lidar>/box/cluster/{euclidean,region_rowing}_all     全量包围盒（不过滤，供边坡检测等下游使用）
@@ -23,12 +23,14 @@
 cluster_front:
   ros__parameters:
     lidar_name: "front"
-    input_topic: "/front/no_ground_filter"
+    # input_topic: "/front/upper_ground_filter"
+    input_topic: "/front/smoothed_upper_ground"    
     euclidean_topic: "/front/box/cluster/euclidean"
-    region_rowing_topic: "/front/box/cluster/region_rowing"
     euclidean_all_topic: "/front/box/cluster/euclidean_all"
-    region_rowing_all_topic: "/front/box/cluster/region_rowing_all"
     euclidean_marker_topic: "/front/box/cluster/euclidean/marker"
+
+    region_rowing_topic: "/front/box/cluster/region_rowing"    
+    region_rowing_all_topic: "/front/box/cluster/region_rowing_all"    
     region_rowing_marker_topic: "/front/box/cluster/region_rowing/marker"
 
     cluster_tolerance: 0.15     # 欧氏聚类容差（米）
@@ -74,7 +76,7 @@ cluster_front:
 cluster_rear:
   ros__parameters:
     lidar_name: "rear"
-    input_topic: "/rear/no_ground_filter"
+    input_topic: "/rear/upper_ground_filter"
     euclidean_topic: "/rear/box/cluster/euclidean"
     region_rowing_topic: "/rear/box/cluster/region_rowing"
     euclidean_all_topic: "/rear/box/cluster/euclidean_all"

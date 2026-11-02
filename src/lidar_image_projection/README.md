@@ -185,3 +185,6 @@ ros2 run lidar_image_projection lidar_image_projection_node \
 - 膨胀后高度图: `/front/lidar_dilated_height_image`、`/rear/lidar_dilated_height_image`
 - 边缘点云: `/front/lidar_edge_cloud`、`/rear/lidar_edge_cloud`
 
+
+
+ros2 bag play -s mcap -l bags/autodth_20261029_172520/

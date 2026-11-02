@@ -31,37 +31,54 @@
 # ============ RANSAC 地面滤波节点 (ransac_ground_filter_node) ============
 # 前/后两颗雷达各启动一个节点实例，通过 lidar_name 区分。
 # lidar_name 用于推导默认话题名与 frame_id:
-#   front → /front/rslidar_points_leveled → /front/no_ground_filter + /front/all_filter
-#   rear  → /rear/rslidar_points_leveled  → /rear/no_ground_filter + /rear/all_filter
+#   front → /front/rslidar_points_leveled → /front/ground + /front/upper_ground_filter + /front/below_ground + /front/all_filter
+#   rear  → /rear/rslidar_points_leveled  → /rear/ground + /rear/upper_ground_filter + /rear/below_ground + /rear/all_filter
 
 # ============ 前雷达 (front) ============
 ransac_ground_filter_front:
   ros__parameters:
     lidar_name: "front"
     input_topic: "/front/rslidar_points_leveled"
-    no_ground_filter_topic: "/front/no_ground_filter"   # 去扬尘后的非地面点云（聚类用）
-    no_ground_raw_topic: "/front/no_ground_raw"         # 扬尘过滤前的非地面点云（调试观察用）
-    all_filter_topic: "/front/all_filter"               # 地面 + 过滤后非地面（边坡/悬崖检测用）
+    ground_topic: "/front/ground"                       # 地面点云
+    upper_ground_filter_topic: "/front/upper_ground_filter"   # 过滤后地上点云（聚类用）
+    upper_ground_raw_topic: "/front/upper_ground_raw"         # 过滤前地上点云（调试观察用）
+    below_ground_topic: "/front/below_ground"           # 地下点云
+    all_filter_topic: "/front/all_filter"               # 地面 + 过滤后地上（边坡/悬崖检测用）
+    smoothed_topic: "/front/smoothed_upper_and_ground"  # 降采样 + 高度平滑后的地面/地上点云
+    smoothed_ground_topic: "/front/smoothed_ground"     # 平滑点云再分离出的地面点云
+    smoothed_upper_topic: "/front/smoothed_upper_ground" # 平滑点云再分离出的非地面(地上)点云
     base_frame: "front_rslidar"
     debug: false
     max_iterations: 1000
     min_trial: 5000
     min_points: 1000
     outlier_threshold: 0.01
-    plane_slope_threshold: 10.0
+    plane_slope_threshold: 30.0
     # voxel_size_x: 0.04
     # voxel_size_y: 0.04
     # voxel_size_z: 0.04
-    voxel_size_x: 0.10
-    voxel_size_y: 0.10
-    voxel_size_z: 0.10
+    voxel_size_x: 0.05
+    voxel_size_y: 0.05
+    voxel_size_z: 0.05
     # 距离自适应体素：边长 = voxel_size + adaptive_voxel_ratio * 水平距离，上限 adaptive_voxel_max_size
-    use_downsample: false          # false: 不降采样，RANSAC 用全分辨率点云拟合
-    use_adaptive_voxel: true
-    adaptive_voxel_ratio: 0.015
-    adaptive_voxel_max_size: 0.4
+    use_downsample: true          # true: RANSAC 前对 ≤max_range 点云做体素降采样（拟合用，不删最终点）
+    use_adaptive_voxel: false
+    adaptive_voxel_ratio: 0.05
+    adaptive_voxel_max_size: 1.00
     height_threshold: 0.1
     max_range: 10.0
+
+    # ---- 平滑输出（all_filter 降采样 + 水平邻域高度平均）----
+    enable_smoothed_output: true
+    smooth_leaf_size: 0.05        # 降采样体素边长（m）
+    smooth_k_neighbors: 16        # 水平邻域高度平均的邻居数
+
+    # ---- all_filter 发布前降采样 + 离群点过滤 ----
+    enable_all_filter_downsample: true
+    all_filter_leaf_size: 0.05    # 发布 all_filter 前的体素降采样边长（m）
+    enable_all_filter_outlier: true
+    all_filter_outlier_mean_k: 20     # 统计离群点过滤近邻数
+    all_filter_outlier_std_mul: 1.0   # 统计离群点过滤标准差倍数阈值
 
     # ---- 扬尘过滤（单帧网格密度法）----
     enable_dust_filter: true
@@ -87,29 +104,46 @@ ransac_ground_filter_rear:
   ros__parameters:
     lidar_name: "rear"
     input_topic: "/rear/rslidar_points_leveled"
-    no_ground_filter_topic: "/rear/no_ground_filter"   # 去扬尘后的非地面点云（聚类用）
-    no_ground_raw_topic: "/rear/no_ground_raw"         # 扬尘过滤前的非地面点云（调试观察用）
-    all_filter_topic: "/rear/all_filter"               # 地面 + 过滤后非地面（边坡/悬崖检测用）
+    ground_topic: "/rear/ground"                       # 地面点云
+    upper_ground_filter_topic: "/rear/upper_ground_filter"   # 过滤后地上点云（聚类用）
+    upper_ground_raw_topic: "/rear/upper_ground_raw"         # 过滤前地上点云（调试观察用）
+    below_ground_topic: "/rear/below_ground"           # 地下点云
+    all_filter_topic: "/rear/all_filter"               # 地面 + 过滤后地上（边坡/悬崖检测用）
+    smoothed_topic: "/rear/smoothed_upper_and_ground"  # 降采样 + 高度平滑后的地面/地上点云
+    smoothed_ground_topic: "/rear/smoothed_ground"     # 平滑点云再分离出的地面点云
+    smoothed_upper_topic: "/rear/smoothed_upper_ground" # 平滑点云再分离出的非地面(地上)点云
     base_frame: "rear_rslidar"
     debug: false
     max_iterations: 1000
     min_trial: 5000
     min_points: 1000
     outlier_threshold: 0.01
-    plane_slope_threshold: 10.0
+    plane_slope_threshold: 30.0
     # voxel_size_x: 0.04
     # voxel_size_y: 0.04
     # voxel_size_z: 0.04
-    voxel_size_x: 0.10
-    voxel_size_y: 0.10
-    voxel_size_z: 0.10
+    voxel_size_x: 0.50
+    voxel_size_y: 0.50
+    voxel_size_z: 0.50
     # 距离自适应体素：边长 = voxel_size + adaptive_voxel_ratio * 水平距离，上限 adaptive_voxel_max_size
-    use_downsample: false          # false: 不降采样，RANSAC 用全分辨率点云拟合
+    use_downsample: true          # true: RANSAC 前对 ≤max_range 点云做体素降采样（拟合用，不删最终点）
     use_adaptive_voxel: true
-    adaptive_voxel_ratio: 0.015
-    adaptive_voxel_max_size: 0.4
+    adaptive_voxel_ratio: 0.05
+    adaptive_voxel_max_size: 1.00
     height_threshold: 0.10
     max_range: 10.0
+
+    # ---- 平滑输出（all_filter 降采样 + 水平邻域高度平均）----
+    enable_smoothed_output: true
+    smooth_leaf_size: 0.2        # 降采样体素边长（m）
+    smooth_k_neighbors: 16        # 水平邻域高度平均的邻居数
+
+    # ---- all_filter 发布前降采样 + 离群点过滤 ----
+    enable_all_filter_downsample: true
+    all_filter_leaf_size: 0.1    # 发布 all_filter 前的体素降采样边长（m）
+    enable_all_filter_outlier: true
+    all_filter_outlier_mean_k: 20     # 统计离群点过滤近邻数
+    all_filter_outlier_std_mul: 1.0   # 统计离群点过滤标准差倍数阈值
 
     # ---- 扬尘过滤（单帧网格密度法）----
     enable_dust_filter: true

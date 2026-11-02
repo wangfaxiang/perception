@@ -26,6 +26,16 @@ lidar_leveling_front:
     pitch_deg: 25.0            # 安装俯仰角（度），绕 Y 轴    
     yaw_deg: 0.0              # 安装偏航角（度），绕 Z 轴
 
+    # ---- 点云降采样（距离自适应体素）----
+    use_downsample: false       # 降采样总开关（true: 开启，false: 输出全分辨率点云）
+    voxel_size_x: 0.01          # 体素边长 X（m）
+    voxel_size_y: 0.01         # 体素边长 Y（m）
+    voxel_size_z: 0.01          # 体素边长 Z（m）
+    # 距离自适应体素：边长 = voxel_size + adaptive_voxel_ratio * 水平距离，上限 adaptive_voxel_max_size
+    use_adaptive_voxel: true   # 距离自适应体素开关
+    adaptive_voxel_ratio: 0.01
+    adaptive_voxel_max_size: 0.1
+
 # ============ 后雷达 (rear) ============
 lidar_leveling_rear:
   ros__parameters:
@@ -35,6 +45,15 @@ lidar_leveling_rear:
     frame_id: ""
 
     roll_deg: 0.0
-    pitch_deg: 37.0
+    pitch_deg: 25.0
     # pitch_deg: 0.0            # 安装俯仰角（度），绕 Y 轴        
     yaw_deg: 0.0
+
+    # ---- 点云降采样（距离自适应体素）----
+    use_downsample: false       # 降采样总开关（true: 开启，false: 输出全分辨率点云）
+    voxel_size_x: 0.1
+    voxel_size_y: 0.1
+    voxel_size_z: 0.1
+    use_adaptive_voxel: true
+    adaptive_voxel_ratio: 0.015
+    adaptive_voxel_max_size: 0.4

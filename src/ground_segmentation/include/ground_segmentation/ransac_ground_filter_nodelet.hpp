@@ -22,6 +22,7 @@
 #include <visualization_msgs/msg/marker_array.hpp>
 
 #include <pcl/filters/extract_indices.h>
+#include <pcl/filters/statistical_outlier_removal.h>
 #include <pcl/filters/voxel_grid.h>
 #include <pcl/segmentation/sac_segmentation.h>
 #include <pcl_conversions/pcl_conversions.h>
@@ -62,9 +63,14 @@ class RANSACGroundFilterComponent : public rclcpp::Node
   using PointCloud2ConstPtr = sensor_msgs::msg::PointCloud2::ConstSharedPtr;
 
 private:
-  rclcpp::Publisher<PointCloud2>::SharedPtr pub_no_ground_filter_;
-  rclcpp::Publisher<PointCloud2>::SharedPtr pub_no_ground_raw_;
+  rclcpp::Publisher<PointCloud2>::SharedPtr pub_ground_;
+  rclcpp::Publisher<PointCloud2>::SharedPtr pub_upper_ground_raw_;
+  rclcpp::Publisher<PointCloud2>::SharedPtr pub_upper_ground_filter_;
+  rclcpp::Publisher<PointCloud2>::SharedPtr pub_below_ground_;
   rclcpp::Publisher<PointCloud2>::SharedPtr pub_all_filter_;
+  rclcpp::Publisher<PointCloud2>::SharedPtr pub_smoothed_merged_;
+  rclcpp::Publisher<PointCloud2>::SharedPtr pub_smoothed_ground_;
+  rclcpp::Publisher<PointCloud2>::SharedPtr pub_smoothed_upper_;
   rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr sub_cloud_;
   rclcpp::Publisher<geometry_msgs::msg::PoseArray>::SharedPtr debug_pose_array_pub_;
   rclcpp::Publisher<PointCloud2>::SharedPtr debug_ground_cloud_pub_;
@@ -77,12 +83,29 @@ private:
 
   bool filter(
     const PointCloud2ConstPtr & input,
-    PointCloud2 & no_ground_raw_output,
-    PointCloud2 & no_ground_filter_output,
+    PointCloud2 & ground_output,
+    PointCloud2 & upper_ground_raw_output,
+    PointCloud2 & upper_ground_filter_output,
+    PointCloud2 & below_ground_output,
     PointCloud2 & all_filter_output);
 
   void applyDustFilter(
     const sensor_msgs::msg::PointCloud2 & input, sensor_msgs::msg::PointCloud2 & output);
+
+  /*!
+   * 对 all_filter（地面 + 过滤后地上）做体素降采样 + 水平邻域高度平均，输出平滑点云
+   */
+  void smoothHeightCloud(
+    const pcl::PointCloud<pcl::PointXYZI> & input, pcl::PointCloud<pcl::PointXYZI> & output);
+
+  /*!
+   * 对 all_filter 做平滑后，再按本帧 RANSAC 平面分离为地面 / 非地面（地上）两路点云
+   */
+  void processSmoothedCloud(
+    const sensor_msgs::msg::PointCloud2 & all_filter,
+    PointCloud2 & smoothed_merged,
+    PointCloud2 & smoothed_ground,
+    PointCloud2 & smoothed_upper);
 
   void onPointCloud(const sensor_msgs::msg::PointCloud2 & input);
 
@@ -102,9 +125,22 @@ private:
   bool use_adaptive_voxel_ = false;
   double adaptive_voxel_ratio_ = 0.01;
   double adaptive_voxel_max_size_ = 0.25;
+  // ---- 平滑输出（all_filter 降采样 + 高度平滑）----
+  bool enable_smoothed_output_ = true;
+  double smooth_leaf_size_ = 0.2;   // 降采样体素边长（m）
+  int smooth_k_neighbors_ = 8;      // 水平邻域高度平均的邻居数
+  // ---- all_filter 发布前降采样 + 离群点过滤 ----
+  bool enable_all_filter_downsample_ = true;
+  double all_filter_leaf_size_ = 0.1;  // 发布 all_filter 前的体素降采样边长（m），≤0 表示不降采样
+  bool enable_all_filter_outlier_ = true;
+  int all_filter_outlier_mean_k_ = 20;      // 统计离群点过滤近邻数
+  double all_filter_outlier_std_mul_ = 1.0; // 统计离群点过滤标准差倍数阈值
   bool debug_ = false;
   bool is_initialized_debug_message_ = false;
   Eigen::Vector3d unit_vec_ = Eigen::Vector3d::UnitZ();
+  // 当前帧拟合平面的逆变换（用于平滑点云再分离地面/非地面）
+  Eigen::Affine3d plane_affine_inv_ = Eigen::Affine3d::Identity();
+  bool has_valid_plane_ = false;
 
   // ---- 扬尘过滤参数（单帧网格密度法）----
   bool enable_dust_filter_ = true;

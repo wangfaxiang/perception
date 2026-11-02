@@ -1,6 +1,6 @@
 # cluster
 
-基于 ransac 地面过滤后的非地面点云做聚类（欧氏 / 区域生长），输出障碍物包围盒，
+基于 ransac 地面过滤后的地上点云做聚类（欧氏 / 区域生长），输出障碍物包围盒，
 并按 AutoDTH 契约 §3.1/§5.3 发布**单雷达原始障碍物告警**，供共用融合节点合成
 `/perception/obstacle_warning` 与 `/perception/stop_command`。
 
@@ -10,9 +10,9 @@
 ## 数据流
 
 ```text
-/front/no_ground_filter ─► cluster_front ─┬─► /front/box/cluster/{euclidean,region_rowing}(+marker)   （调试用）
+/front/upper_ground_filter ─► cluster_front ─┬─► /front/box/cluster/{euclidean,region_rowing}(+marker)   （调试用）
                                            └─► /cluster_front/obstacle_warning_raw ┐
-/rear/no_ground_filter  ─► cluster_rear  ─┬─► /rear/box/cluster/...                ├─► warning_fusion ─┬─► /perception/obstacle_warning
+/rear/upper_ground_filter  ─► cluster_rear  ─┬─► /rear/box/cluster/...                ├─► warning_fusion ─┬─► /perception/obstacle_warning
                                            └─► /cluster_rear/obstacle_warning_raw  ┘  (perception_common) └─► /perception/stop_command
 ```
 
@@ -74,7 +74,7 @@ ros2 launch perception_common warning_fusion.launch.py
 | 参数 | 默认值 | 说明 |
 | --- | --- | --- |
 | `lidar_name` | "" | front / rear，决定门控归属与默认话题 |
-| `input_topic` | `/<lidar>/no_ground_filter` | ransac 地面过滤 + 扬尘过滤后的非地面点云 |
+| `input_topic` | `/<lidar>/upper_ground_filter` | ransac 地面过滤 + 扬尘过滤后的地上点云 |
 | `cluster_tolerance` / `min_cluster_size` / `max_cluster_size` | 0.2 / 15 / 100000 | 欧氏聚类参数 |
 | `region_rowing` | false | 是否同时跑区域生长聚类（调试） |
 | `euclidean_cluster` | `"true"` | 是否跑欧氏聚类（字符串 `"true"`/`"false"`） |

@@ -54,10 +54,10 @@ range_image_segmentation_front:
 
     horizontal_angle_min: -60.0   # 水平角下限(度)
     horizontal_angle_max: 60.0    # 水平角上限(度)
-    horizontal_res: 0.1          # 水平分辨率(度/格)
-    vertical_angle_min: -13.0     # 俯仰角下限(度，最下方)
+    horizontal_res: 2.0          # 水平分辨率(度/格)
+    vertical_angle_min: -45.0     # 俯仰角下限(度，最下方)
     vertical_angle_max: 0.0       # 俯仰角上限(度，最上方/水平)
-    vertical_res:  0.05          # 垂直分辨率(度/格)
+    vertical_res:  2.0          # 垂直分辨率(度/格)
 
 # ============ 后雷达 (rear) ============
 range_image_segmentation_rear:
