@@ -122,12 +122,12 @@ ransac_ground_filter_rear:
     # voxel_size_x: 0.04
     # voxel_size_y: 0.04
     # voxel_size_z: 0.04
-    voxel_size_x: 0.50
-    voxel_size_y: 0.50
-    voxel_size_z: 0.50
+    voxel_size_x: 0.05
+    voxel_size_y: 0.05
+    voxel_size_z: 0.05
     # 距离自适应体素：边长 = voxel_size + adaptive_voxel_ratio * 水平距离，上限 adaptive_voxel_max_size
     use_downsample: true          # true: RANSAC 前对 ≤max_range 点云做体素降采样（拟合用，不删最终点）
-    use_adaptive_voxel: true
+    use_adaptive_voxel: false
     adaptive_voxel_ratio: 0.05
     adaptive_voxel_max_size: 1.00
     height_threshold: 0.10
@@ -135,12 +135,12 @@ ransac_ground_filter_rear:
 
     # ---- 平滑输出（all_filter 降采样 + 水平邻域高度平均）----
     enable_smoothed_output: true
-    smooth_leaf_size: 0.2        # 降采样体素边长（m）
+    smooth_leaf_size: 0.05        # 降采样体素边长（m）
     smooth_k_neighbors: 16        # 水平邻域高度平均的邻居数
 
     # ---- all_filter 发布前降采样 + 离群点过滤 ----
     enable_all_filter_downsample: true
-    all_filter_leaf_size: 0.1    # 发布 all_filter 前的体素降采样边长（m）
+    all_filter_leaf_size: 0.05    # 发布 all_filter 前的体素降采样边长（m）
     enable_all_filter_outlier: true
     all_filter_outlier_mean_k: 20     # 统计离群点过滤近邻数
     all_filter_outlier_std_mul: 1.0   # 统计离群点过滤标准差倍数阈值

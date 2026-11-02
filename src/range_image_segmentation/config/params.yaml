@@ -44,7 +44,7 @@ range_image_segmentation_front:
     # ---- 方位角聚类（线段可视化）：边缘点按方位角排序后聚类，每簇一条线、不同颜色 ----
     cluster_gap_range: 1.0   # 相邻两点 range 差大于该值视为不同簇(m)
     cluster_gap_dist: 1.0    # 相邻两点欧氏距离大于该值视为不同簇(m)
-    cluster_min_points: 10   # 每簇最少点数，少于该值的簇过滤
+    cluster_min_points: 5   # 每簇最少点数，少于该值的簇过滤
     edge_smooth_enable: true   # 是否对每簇折线做平滑（每点与前后各 2 点取平均）
 
     # ---- 障碍物框过滤：订阅 cluster 的全量框，剔除框内由地面障碍物/推进梁形成的假边缘 ----
@@ -54,10 +54,10 @@ range_image_segmentation_front:
 
     horizontal_angle_min: -60.0   # 水平角下限(度)
     horizontal_angle_max: 60.0    # 水平角上限(度)
-    horizontal_res: 2.0          # 水平分辨率(度/格)
-    vertical_angle_min: -45.0     # 俯仰角下限(度，最下方)
-    vertical_angle_max: 0.0       # 俯仰角上限(度，最上方/水平)
-    vertical_res:  2.0          # 垂直分辨率(度/格)
+    horizontal_res: 5.0          # 水平分辨率(度/格)
+    vertical_angle_min: -60.0     # 俯仰角下限(度，最下方)
+    vertical_angle_max: 60.0       # 俯仰角上限(度，最上方/水平)
+    vertical_res:  0.5          # 垂直分辨率(度/格)
 
 # ============ 后雷达 (rear) ============
 range_image_segmentation_rear:
@@ -93,7 +93,7 @@ range_image_segmentation_rear:
     # ---- 方位角聚类（线段可视化）：边缘点按方位角排序后聚类，每簇一条线、不同颜色 ----
     cluster_gap_range: 1.0   # 相邻两点 range 差大于该值视为不同簇(m)
     cluster_gap_dist: 1.0    # 相邻两点欧氏距离大于该值视为不同簇(m)
-    cluster_min_points: 10   # 每簇最少点数，少于该值的簇过滤
+    cluster_min_points: 5   # 每簇最少点数，少于该值的簇过滤
     edge_smooth_enable: true   # 是否对每簇折线做平滑（每点与前后各 2 点取平均）
 
     # ---- 障碍物框过滤：订阅 cluster 的全量框，剔除框内由地面障碍物/推进梁形成的假边缘 ----
@@ -103,7 +103,7 @@ range_image_segmentation_rear:
 
     horizontal_angle_min: -60.0
     horizontal_angle_max: 60.0
-    horizontal_res: 0.1
-    vertical_angle_min: -13.0
-    vertical_angle_max: 0.0
-    vertical_res: 0.05
+    horizontal_res: 5.0
+    vertical_angle_min: -60.0
+    vertical_angle_max: 60.0
+    vertical_res: 0.5
