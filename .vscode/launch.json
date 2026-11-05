@@ -448,11 +448,10 @@
             "program": "${workspaceFolder}/build/lidar_leveling/lidar_leveling_node",
             "args": [
                 "--ros-args",
-                "-r", "__node:=debug_lidar_leveling_front",
-                "-p", "lidar_name:=front",
-                "-p", "roll_deg:=0.0",
-                "-p", "pitch_deg:=30.0",
-                "-p", "yaw_deg:=0.0"
+                // 与 lidar_leveling.launch.py 保持一致：节点名用生产名 lidar_leveling_front，
+                // 使其命中 params.yaml 的 lidar_leveling_front 专属段，参数全部取自参数文件。
+                "--params-file", "${workspaceFolder}/install/lidar_leveling/share/lidar_leveling/config/params.yaml",
+                "-r", "__node:=lidar_leveling_front"
             ],
             "cwd": "${workspaceFolder}",
             "environment": [
@@ -479,11 +478,10 @@
             "program": "${workspaceFolder}/build/lidar_leveling/lidar_leveling_node",
             "args": [
                 "--ros-args",
-                "-r", "__node:=debug_lidar_leveling_rear",
-                "-p", "lidar_name:=rear",
-                "-p", "roll_deg:=0.0",
-                "-p", "pitch_deg:=37.0",
-                "-p", "yaw_deg:=0.0"
+                // 与 lidar_leveling.launch.py 保持一致：节点名用生产名 lidar_leveling_rear，
+                // 使其命中 params.yaml 的 lidar_leveling_rear 专属段，参数全部取自参数文件。
+                "--params-file", "${workspaceFolder}/install/lidar_leveling/share/lidar_leveling/config/params.yaml",
+                "-r", "__node:=lidar_leveling_rear"
             ],
             "cwd": "${workspaceFolder}",
             "environment": [
@@ -570,13 +568,17 @@
             "stopAll": true
         },
         {
-            "name": "Debug 感知告警全链路 (pothole×2 + cluster×2 + fusion)",
+            "name": "Debug 感知告警全链路 (leveling×2 + ground×2 + range×2 + cluster×2 + fusion)",
             "configurations": [
+                "Debug lidar_leveling_front (launch)",
+                // "Debug lidar_leveling_rear (launch)",
+                "Debug ransac_ground_filter_front (launch)",
+                // "Debug ransac_ground_filter_rear (launch)",
                 "Debug range_image_segmentation_front (launch)",
                 // "Debug range_image_segmentation_rear (launch)",
-                // "Debug cluster_front (launch)",
+                "Debug cluster_front (launch)",
                 // "Debug cluster_rear (launch)",
-                "Debug warning_fusion (launch)"
+                // "Debug warning_fusion (launch)"
             ],
             "stopAll": true
         },
