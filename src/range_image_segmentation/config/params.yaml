@@ -15,6 +15,7 @@ range_image_segmentation_front:
   ros__parameters:
     lidar_name: "front"
     input_topic: "/front/all_filter"
+    # input_topic: "/front/leveled_filtered_smoothed"    
     edge_cloud_topic: "/front/ditch_cloud"
     edge_line_topic: "/front/ditch_line"
     frame_id: "front_rslidar"
@@ -36,10 +37,10 @@ range_image_segmentation_front:
     min_range: 0.2         # 最小距离(m)，小于该值的点丢弃
     gap_thresh: 1.5        # 相邻点距离差大于该值视为断点(m)，近处基准阈值
     gap_slope: 0.15        # 断点阈值随距离线性放大系数(1/m)：有效阈值 = gap_thresh + gap_slope*range
-    edge_max_range: 10.0   # 边缘点输出距离上限(m)，大于该值的边缘点丢弃
+    edge_max_range: 6.0   # 边缘点输出距离上限(m)，大于该值的边缘点丢弃
     cliff_min_elev: -8.0  # 悬崖点最小垂直角(度)，垂直角大于该值的悬崖点视为远处误判过滤
     outlier_mean_k: 6      # 离群点判断的近邻数
-    outlier_std_mul: 1.0   # 离群点剔除的 std 倍数
+    outlier_std_mul: 0.5   # 离群点剔除的 std 倍数
 
     # ---- 方位角聚类（线段可视化）：边缘点按方位角排序后聚类，每簇一条线、不同颜色 ----
     cluster_gap_range: 1.0   # 相邻两点 range 差大于该值视为不同簇(m)
@@ -85,10 +86,10 @@ range_image_segmentation_rear:
     min_range: 0.2
     gap_thresh: 1.5
     gap_slope: 0.15
-    edge_max_range: 10.0
+    edge_max_range: 6.0
     cliff_min_elev: -8.0
     outlier_mean_k: 6
-    outlier_std_mul: 1.0
+    outlier_std_mul: 0.5
 
     # ---- 方位角聚类（线段可视化）：边缘点按方位角排序后聚类，每簇一条线、不同颜色 ----
     cluster_gap_range: 1.0   # 相邻两点 range 差大于该值视为不同簇(m)

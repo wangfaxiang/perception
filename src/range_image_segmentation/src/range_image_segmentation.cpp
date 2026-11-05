@@ -39,6 +39,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
 #include <limits>
 #include <memory>
 #include <mutex>
@@ -66,6 +67,8 @@ public:
       declare_parameter<std::string>("edge_cloud_topic", prefix + "/ditch_cloud");
     const std::string edge_line_topic =
       declare_parameter<std::string>("edge_line_topic", prefix + "/ditch_line");
+    const std::string grid_topic =
+      declare_parameter<std::string>("grid_topic", prefix + "/range_grid");
     frame_id_ = declare_parameter<std::string>(
       "frame_id", lidar_name_.empty() ? "rslidar" : lidar_name_ + "_rslidar");
 
@@ -73,7 +76,7 @@ public:
     min_range_ = declare_parameter<double>("min_range", 0.2);
     gap_thresh_ = declare_parameter<double>("gap_thresh", 1.0);
     gap_slope_ = declare_parameter<double>("gap_slope", 0.15);
-    edge_max_range_ = declare_parameter<double>("edge_max_range", 10.0);
+    edge_max_range_ = declare_parameter<double>("edge_max_range", 4.0);
     cliff_min_elev_ = declare_parameter<double>("cliff_min_elev", -8.0);
     outlier_mean_k_ = declare_parameter<int>("outlier_mean_k", 6);
     outlier_std_mul_ = declare_parameter<double>("outlier_std_mul", 1.0);
@@ -84,6 +87,15 @@ public:
     cluster_gap_dist_ = declare_parameter<double>("cluster_gap_dist", 1.0);
     cluster_min_points_ = declare_parameter<int>("cluster_min_points", 10);
     edge_smooth_enable_ = declare_parameter<bool>("edge_smooth_enable", true);
+    // 折线滑动平均窗口大小（点数，居中窗口，自动取奇数；<=1 或 edge_smooth_enable=false 时不平滑）
+    smooth_window_ = declare_parameter<int>("smooth_window", 5);
+
+    // 边缘折线分色阈值（仅用于 rviz 显示，不影响告警逻辑）：
+    //   < line_red_dist    红色
+    //   [line_red_dist, line_yellow_dist]  黄色
+    //   > line_yellow_dist 绿色
+    line_red_dist_ = declare_parameter<double>("line_red_dist", 1.6);
+    line_yellow_dist_ = declare_parameter<double>("line_yellow_dist", 1.8);
 
     // 障碍物框过滤：订阅 cluster 的全量框（不过滤），剔除框内由地面障碍物/推进梁形成的假边缘
     box_topic_ = declare_parameter<std::string>(
@@ -149,6 +161,9 @@ public:
       create_publisher<visualization_msgs::msg::MarkerArray>(edge_line_topic, rclcpp::QoS(10));
     pub_edge_ =
       create_publisher<dth_messages::msg::EdgeWarning>(edge_topic_, rclcpp::QoS(10));
+    // 网格可视化：transient_local 让后启动的 rviz 也能收到（发布一次即可）
+    pub_grid_ = create_publisher<visualization_msgs::msg::MarkerArray>(
+      grid_topic, rclcpp::QoS(1).transient_local());
 
     // 心跳：与点云解耦周期发布（契约 §4.3 必须 ≥5Hz）；点云断流时输出安全默认值（§3.3）。
     edge_heartbeat_timer_ = create_wall_timer(
@@ -172,6 +187,9 @@ public:
     RCLCPP_INFO(get_logger(), "方位角聚类: gap_range=%.2fm, gap_dist=%.2fm, min_points=%d, smooth=%s",
                 cluster_gap_range_, cluster_gap_dist_, cluster_min_points_,
                 edge_smooth_enable_ ? "on" : "off");
+
+    // 发布水平角/俯仰角分割网格到 rviz（静态，发布一次即可）
+    publishGrid();
   }
 
 private:
@@ -207,6 +225,18 @@ private:
     pcl::PointCloud<pcl::PointXYZI> cloud;
     pcl::fromROSMsg(*msg, cloud);
 
+    // 输入点云统计离群点移除：剔除孤立噪声点（扬尘/杂波），
+    // 避免它们在“距离连续”一维上形成假断点，被误判为沟壑/悬崖边缘。
+    if (outlier_mean_k_ > 0 && !cloud.empty()) {
+      pcl::StatisticalOutlierRemoval<pcl::PointXYZI> sor;
+      sor.setInputCloud(cloud.makeShared());
+      sor.setMeanK(outlier_mean_k_);
+      sor.setStddevMulThresh(outlier_std_mul_);
+      pcl::PointCloud<pcl::PointXYZI> cloud_filtered;
+      sor.filter(cloud_filtered);
+      cloud.swap(cloud_filtered);
+    }
+
     const int cell_count = cols_ * rows_;
     std::vector<Cell> cells(cell_count);
     std::vector<pcl::PointXYZI> points;   // 全局点表, 下标即 id
@@ -233,13 +263,13 @@ private:
         continue;
       }
 
-      // 推进梁过滤：雷达前方近处、接近水平、且高于雷达的结构件
+      // 推进梁过滤：雷达前方近处、接近水平、且高于雷达的结构件（调试模式：暂不过滤）
       // if (elevation > -10.0 && range < 3.0 && p.z > -0.5f) {
       //   continue;
       // }
-      if (range < 2.5 && p.z > -0.5f) {
-        continue;
-      }      
+      // if (range < 2.5 && p.z > -0.5f) {
+      //   continue;
+      // }
 
       // row: 上=vert_max(0°), 下=vert_min(-45°)
       int col = static_cast<int>((azimuth - horiz_min_) / (horiz_max_ - horiz_min_) * cols_);
@@ -293,19 +323,19 @@ private:
       detectGaps(merged);
     };
 
-    // Rule 2: 水平相邻
-    for (int r = 0; r < rows_; ++r) {
-      for (int c = 0; c + 1 < cols_; ++c) {
-        checkPair(cells[r * cols_ + c], cells[r * cols_ + c + 1]);
-      }
-    }
+    // // Rule 2: 水平相邻
+    // for (int r = 0; r < rows_; ++r) {
+    //   for (int c = 0; c + 1 < cols_; ++c) {
+    //     checkPair(cells[r * cols_ + c], cells[r * cols_ + c + 1]);
+    //   }
+    // }
 
-    // Rule 3: 垂直相邻
-    for (int c = 0; c < cols_; ++c) {
-      for (int r = 0; r + 1 < rows_; ++r) {
-        checkPair(cells[r * cols_ + c], cells[(r + 1) * cols_ + c]);
-      }
-    }
+    // // Rule 3: 垂直相邻
+    // for (int c = 0; c < cols_; ++c) {
+    //   for (int r = 0; r + 1 < rows_; ++r) {
+    //     checkPair(cells[r * cols_ + c], cells[(r + 1) * cols_ + c]);
+    //   }
+    // }
 
     // Rule 4: 无沟壑的列, 取最上方有回波格子里最近的点作为悬崖
     for (int c = 0; c < cols_; ++c) {
@@ -374,6 +404,79 @@ private:
     latest_boxes_ = *msg;
   }
 
+  // 发布 (水平角 × 俯仰角) 分割网格到 rviz：
+  //   绿色射线 = 水平角分界线（每个 col 边界，z=0 平面上 min_range→max_range）
+  //   橙色圆弧 = 俯仰角分界线（每个 row 边界，range=max_range 处 horiz_min→horiz_max）
+  void publishGrid()
+  {
+    visualization_msgs::msg::MarkerArray array;
+    const rclcpp::Time stamp = this->now();
+    int id = 0;
+
+    // 水平角分界线
+    const double d_az = (horiz_max_ - horiz_min_) / cols_;
+    for (int c = 0; c <= cols_; ++c) {
+      const double az = (horiz_min_ + c * d_az) * kPi / 180.0;
+      visualization_msgs::msg::Marker line;
+      line.header.stamp = stamp;
+      line.header.frame_id = frame_id_;
+      line.ns = "range_grid_h";
+      line.id = id++;
+      line.type = visualization_msgs::msg::Marker::LINE_STRIP;
+      line.action = visualization_msgs::msg::Marker::ADD;
+      line.scale.x = 0.02;
+      line.color.r = 0.2f;
+      line.color.g = 1.0f;
+      line.color.b = 0.2f;
+      line.color.a = 0.6f;
+      line.pose.orientation.w = 1.0;
+      geometry_msgs::msg::Point p0;
+      p0.x = min_range_ * std::cos(az);
+      p0.y = min_range_ * std::sin(az);
+      p0.z = 0.0;
+      geometry_msgs::msg::Point p1;
+      p1.x = max_range_ * std::cos(az);
+      p1.y = max_range_ * std::sin(az);
+      p1.z = 0.0;
+      line.points = {p0, p1};
+      array.markers.push_back(line);
+    }
+
+    // 俯仰角分界线
+    const double d_el = (vert_max_ - vert_min_) / rows_;
+    constexpr int kArcSeg = 60;
+    for (int r = 0; r <= rows_; ++r) {
+      const double el = (vert_max_ - r * d_el) * kPi / 180.0;
+      const double rr = max_range_ * std::cos(el);
+      const double z = max_range_ * std::sin(el);
+      visualization_msgs::msg::Marker line;
+      line.header.stamp = stamp;
+      line.header.frame_id = frame_id_;
+      line.ns = "range_grid_v";
+      line.id = id++;
+      line.type = visualization_msgs::msg::Marker::LINE_STRIP;
+      line.action = visualization_msgs::msg::Marker::ADD;
+      line.scale.x = 0.02;
+      line.color.r = 1.0f;
+      line.color.g = 0.6f;
+      line.color.b = 0.2f;
+      line.color.a = 0.6f;
+      line.pose.orientation.w = 1.0;
+      line.points.reserve(kArcSeg + 1);
+      for (int s = 0; s <= kArcSeg; ++s) {
+        const double az = (horiz_min_ + (horiz_max_ - horiz_min_) * s / kArcSeg) * kPi / 180.0;
+        geometry_msgs::msg::Point p;
+        p.x = rr * std::cos(az);
+        p.y = rr * std::sin(az);
+        p.z = z;
+        line.points.push_back(p);
+      }
+      array.markers.push_back(line);
+    }
+
+    pub_grid_->publish(array);
+  }
+
   void publish(
     const std_msgs::msg::Header & header,
     const std::vector<pcl::PointXYZI> & points,
@@ -394,30 +497,8 @@ private:
       edge.push_back(p);
     }
 
-    // 统计离群点移除：剔除 k 近邻平均距离明显偏大的孤立点
-    pcl::PointCloud<pcl::PointXYZI> edge_filtered;
-    if (edge.size() > static_cast<size_t>(outlier_mean_k_)) {
-      pcl::StatisticalOutlierRemoval<pcl::PointXYZI> sor;
-      sor.setInputCloud(edge.makeShared());
-      sor.setMeanK(outlier_mean_k_);
-      sor.setStddevMulThresh(outlier_std_mul_);
-      sor.filter(edge_filtered);
-    } else {
-      edge_filtered = edge;
-    }
-
-    // 过滤近处高位边缘点：range < 2m 且 z > -0.6m 的点剔除（推进梁等近处结构件），过滤后再聚类
-    {
-      pcl::PointCloud<pcl::PointXYZI> kept;
-      for (const auto & p : edge_filtered.points) {
-        const float range = std::sqrt(p.x * p.x + p.y * p.y + p.z * p.z);
-        if (range < 2.5f && p.z > -0.8f) {
-          continue;
-        }
-        kept.push_back(p);
-      }
-      edge_filtered = kept;
-    }
+    // 调试模式：关闭统计离群点移除与近处高位边缘点过滤，直接显示原始检测到的边缘点
+    pcl::PointCloud<pcl::PointXYZI> edge_filtered = edge;
 
     // 边缘点云
     sensor_msgs::msg::PointCloud2 cloud_msg;
@@ -425,7 +506,7 @@ private:
     cloud_msg.header = header;
     pub_edge_cloud_->publish(cloud_msg);
 
-    // 边缘线段：边缘点按水平方位角排序后聚类，每簇单独连成一条折线并着色
+    // 边缘线段：不聚类、不平滑，所有原始边缘点按水平方位角排序后连成一条折线
     std::vector<std::pair<double, int>> order;  // (方位角, 在 edge_filtered 中的下标)
     order.reserve(edge_filtered.size());
     for (int i = 0; i < static_cast<int>(edge_filtered.size()); ++i) {
@@ -433,32 +514,6 @@ private:
       order.emplace_back(std::atan2(p.y, p.x), i);
     }
     std::sort(order.begin(), order.end());
-
-    // 按方位角顺序聚类：相邻两点 range 差 > cluster_gap_range_ 或欧氏距离 > cluster_gap_dist_
-    // 则视为不同簇；每簇至少 cluster_min_points_ 个点，不足的簇过滤掉。
-    std::vector<std::vector<int>> clusters;  // 每簇存 edge_filtered 下标（按方位角升序）
-    std::vector<int> cur;
-    for (size_t i = 0; i < order.size(); ++i) {
-      const int idx = order[i].second;
-      const auto & p = edge_filtered[idx];
-      const float range = std::sqrt(p.x * p.x + p.y * p.y + p.z * p.z);
-      if (!cur.empty()) {
-        const auto & prev = edge_filtered[cur.back()];
-        const float prev_range = std::sqrt(prev.x * prev.x + prev.y * prev.y + prev.z * prev.z);
-        const float dx = p.x - prev.x;
-        const float dy = p.y - prev.y;
-        const float dz = p.z - prev.z;
-        const float dist = std::sqrt(dx * dx + dy * dy + dz * dz);
-        if (std::fabs(range - prev_range) > cluster_gap_range_ || dist > cluster_gap_dist_) {
-          clusters.push_back(std::move(cur));
-          cur.clear();
-        }
-      }
-      cur.push_back(idx);
-    }
-    if (!cur.empty()) {
-      clusters.push_back(std::move(cur));
-    }
 
     visualization_msgs::msg::MarkerArray array;
     visualization_msgs::msg::Marker clear;
@@ -468,72 +523,112 @@ private:
     clear.action = visualization_msgs::msg::Marker::DELETEALL;
     array.markers.push_back(clear);
 
-    // 通过聚类点数过滤后的边缘点（即 array 中所有线段点），用于边坡告警
+    visualization_msgs::msg::Marker clear_dist;
+    clear_dist.header = header;
+    clear_dist.ns = "ditch_dist";
+    clear_dist.id = 1;
+    clear_dist.action = visualization_msgs::msg::Marker::DELETEALL;
+    array.markers.push_back(clear_dist);
+
+    // 全部原始边缘点（不聚类），用于边坡告警
     pcl::PointCloud<pcl::PointXYZI> edge_clustered;
 
-    int line_id = 0;
-    for (const auto & cluster : clusters) {
-      if (static_cast<int>(cluster.size()) < cluster_min_points_) {
-        continue;  // 点数过少的簇过滤
+    if (!order.empty()) {
+      // 最近边缘点的水平距离（xy 平面），决定折线颜色与距离标注
+      double min_hdist = std::numeric_limits<double>::max();
+      int min_idx = -1;
+      for (int i = 0; i < static_cast<int>(order.size()); ++i) {
+        const auto & qc = edge_filtered[order[i].second];
+        const double h = std::hypot(qc.x, qc.y);
+        if (h < min_hdist) {
+          min_hdist = h;
+          min_idx = order[i].second;
+        }
       }
 
-      // 调试：打印本簇中 range < 2m 的边缘点的高度与垂直角（1Hz 节流，避免刷屏）
-      // for (const int idx : cluster) {
-      //   const auto & q = edge_filtered[idx];
-      //   const float r = std::sqrt(q.x * q.x + q.y * q.y + q.z * q.z);
-      //   if (r < 2.0f) {
-      //     const double elevation = std::asin(q.z / r) * 180.0 / kPi;
-      //     RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 1000,
-      //                          "[edge] range=%.3fm z=%.3fm elev=%.2fdeg",
-      //                          r, q.z, elevation);
-      //   }
-      // }
+      float r = 0.0f, g = 1.0f, b = 0.0f;  // 默认绿色（>1.8m）
+      if (min_hdist < line_red_dist_) {
+        r = 1.0f; g = 0.0f; b = 0.0f;       // <1.6m 红色
+      } else if (min_hdist <= line_yellow_dist_) {
+        r = 1.0f; g = 1.0f; b = 0.0f;       // 1.6~1.8m 黄色
+      }
 
       visualization_msgs::msg::Marker line;
       line.header = header;
       line.ns = "ditch";
-      line.id = line_id++;
+      line.id = 0;
       line.type = visualization_msgs::msg::Marker::LINE_STRIP;
       line.action = visualization_msgs::msg::Marker::ADD;
       line.scale.x = 0.1;
-      hueToRgb(line_id, line.color.r, line.color.g, line.color.b);
+      line.color.r = r;
+      line.color.g = g;
+      line.color.b = b;
       line.color.a = 1.0f;
       line.pose.orientation.w = 1.0;
-      line.points.reserve(cluster.size());
-      const int n = static_cast<int>(cluster.size());
-      for (int j = 0; j < n; ++j) {
-        const auto & qc = edge_filtered[cluster[j]];
+      // 按方位角排序的原始边缘点：既用于边坡告警，也作为平滑输入
+      std::vector<geometry_msgs::msg::Point> raw;
+      raw.reserve(order.size());
+      edge_clustered.reserve(order.size());
+      for (const auto & o : order) {
+        const auto & qc = edge_filtered[o.second];
         geometry_msgs::msg::Point pt;
-        pcl::PointXYZI qs = qc;
-        if (edge_smooth_enable_) {
-          // 折线平滑：每点与前后各 2 点（最多 5 点）取平均，两端不硬凑 5 点
-          const int lo = std::max(0, j - 2);
-          const int hi = std::min(n - 1, j + 2);
-          float sx = 0.0f;
-          float sy = 0.0f;
-          float sz = 0.0f;
-          for (int k = lo; k <= hi; ++k) {
-            const auto & qk = edge_filtered[cluster[k]];
-            sx += qk.x;
-            sy += qk.y;
-            sz += qk.z;
-          }
-          const float inv = 1.0f / static_cast<float>(hi - lo + 1);
-          pt.x = sx * inv;
-          pt.y = sy * inv;
-          pt.z = sz * inv;
-          qs.x = sx * inv;
-          qs.y = sy * inv;
-          qs.z = sz * inv;
-        } else {
-          pt.x = qc.x;
-          pt.y = qc.y;
-          pt.z = qc.z;
+        pt.x = qc.x;
+        pt.y = qc.y;
+        pt.z = qc.z;
+        raw.push_back(pt);
+        edge_clustered.push_back(qc);
+      }
+
+      // 滑动平均（居中窗口）：仅用于折线显示，告警仍用上面的原始点
+      const int n = static_cast<int>(raw.size());
+      int w = edge_smooth_enable_ ? smooth_window_ : 1;
+      if (w < 1) w = 1;
+      if (w > n) w = n;
+      if (w % 2 == 0) w += 1;  // 居中窗口取奇数，两侧对称
+      const int half = w / 2;
+
+      line.points.reserve(n);
+      for (int i = 0; i < n; ++i) {
+        const int lo = std::max(0, i - half);
+        const int hi = std::min(n - 1, i + half);
+        double sx = 0.0, sy = 0.0, sz = 0.0;
+        for (int j = lo; j <= hi; ++j) {
+          sx += raw[j].x;
+          sy += raw[j].y;
+          sz += raw[j].z;
         }
-        line.points.push_back(pt);
-        edge_clustered.push_back(qs);
+        const double cnt = static_cast<double>(hi - lo + 1);
+        geometry_msgs::msg::Point p;
+        p.x = sx / cnt;
+        p.y = sy / cnt;
+        p.z = sz / cnt;
+        line.points.push_back(p);
       }
       array.markers.push_back(line);
+
+      // 最近点旁标注水平距离（rviz TEXT_VIEW_FACING）
+      if (min_idx >= 0) {
+        const auto & qc = edge_filtered[min_idx];
+        visualization_msgs::msg::Marker text;
+        text.header = header;
+        text.ns = "ditch_dist";
+        text.id = 1;
+        text.type = visualization_msgs::msg::Marker::TEXT_VIEW_FACING;
+        text.action = visualization_msgs::msg::Marker::ADD;
+        text.scale.z = 0.4;
+        text.color.r = r;
+        text.color.g = g;
+        text.color.b = b;
+        text.color.a = 1.0f;
+        text.pose.orientation.w = 1.0;
+        text.pose.position.x = qc.x;
+        text.pose.position.y = qc.y;
+        text.pose.position.z = qc.z + 0.3;
+        char buf[32];
+        std::snprintf(buf, sizeof(buf), "%.2f m", min_hdist);
+        text.text = buf;
+        array.markers.push_back(text);
+      }
     }
 
     pub_edge_line_->publish(array);
@@ -681,7 +776,7 @@ private:
   double min_range_ = 0.2;
   double gap_thresh_ = 1.0;
   double gap_slope_ = 0.15;
-  double edge_max_range_ = 10.0;
+  double edge_max_range_ = 4.0;
   double cliff_min_elev_ = -8.0;
   int outlier_mean_k_ = 6;
   double outlier_std_mul_ = 1.0;
@@ -689,6 +784,9 @@ private:
   double cluster_gap_dist_ = 1.0;
   int cluster_min_points_ = 10;
   bool edge_smooth_enable_ = true;
+  int smooth_window_ = 5;
+  double line_red_dist_ = 1.6;
+  double line_yellow_dist_ = 1.8;
   double horiz_min_ = -60.0;
   double horiz_max_ = 60.0;
   double vert_min_ = -45.0;
@@ -721,6 +819,7 @@ private:
   rclcpp::Subscription<box_msg::msg::Boxs>::SharedPtr sub_boxes_;
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pub_edge_cloud_;
   rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr pub_edge_line_;
+  rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr pub_grid_;
   rclcpp::Publisher<dth_messages::msg::EdgeWarning>::SharedPtr pub_edge_;
   rclcpp::TimerBase::SharedPtr edge_heartbeat_timer_;
 

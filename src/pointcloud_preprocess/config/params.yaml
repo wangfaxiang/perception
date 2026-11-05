@@ -1,0 +1,68 @@
+# 调平点云预处理参数（扬尘过滤 → 降采样 → 离群点过滤 → 高度平滑）
+#
+# 输入：lidar_leveling 输出的调平点云（/front|rear/rslidar_points_leveled）
+# 输出：给 elevation_obstacle_detection 障碍物检测使用的点云
+#       （/front|rear/leveled_filtered_smoothed）
+#
+# 与 ransac_ground_filter 的差异：本节点「全量」处理，不做地面/非地面分割。
+# 四步均可独立开关，参数全部可配置。
+#
+# 前/后两颗雷达各启动一个节点实例，通过 lidar_name 区分。
+
+# ============ 前雷达 (front) ============
+pointcloud_preprocess_front:
+  ros__parameters:
+    lidar_name: "front"
+    input_topic: "/front/rslidar_points_leveled"            # 订阅：调平后点云
+    output_topic: "/front/leveled_filtered_smoothed"        # 发布：预处理后点云（障碍物检测输入）
+    frame_id: ""                                            # 输出 frame_id，为空则沿用输入
+
+    # ---- 扬尘过滤（单帧球坐标网格密度法，全量）----
+    enable_dust_filter: true
+    dust_filter_horiz_angle_resolution: 1.0   # 水平角分辨率（°）
+    dust_filter_vert_angle_resolution: 1.0    # 垂直角分辨率（°）
+    dust_filter_range_resolution: 0.1         # 近处基准距离分辨率（m）
+    dust_filter_range_growth: 0.02            # bin 宽随距离线性增长率（每米增加 0.02m）
+    dust_filter_min_density: 20               # 网格内点数 < 该阈值 → 判为扬尘剔除
+
+    # ---- 降采样 ----
+    enable_downsample: true
+    downsample_leaf_size: 0.05                # 体素降采样边长（m），<=0 等效关闭
+
+    # ---- 统计离群点过滤 ----
+    enable_outlier_filter: true
+    outlier_mean_k: 20                        # 统计离群点过滤近邻数
+    outlier_std_mul: 1.0                      # 标准差倍数阈值
+
+    # ---- 高度平滑（水平邻域高度平均）----
+    enable_smooth: true
+    smooth_k_neighbors: 16                    # 水平 k 近邻高度平均的邻居数
+
+# ============ 后雷达 (rear) ============
+pointcloud_preprocess_rear:
+  ros__parameters:
+    lidar_name: "rear"
+    input_topic: "/rear/rslidar_points_leveled"
+    output_topic: "/rear/leveled_filtered_smoothed"
+    frame_id: ""
+
+    # ---- 扬尘过滤（单帧球坐标网格密度法，全量）----
+    enable_dust_filter: true
+    dust_filter_horiz_angle_resolution: 1.0
+    dust_filter_vert_angle_resolution: 1.0
+    dust_filter_range_resolution: 0.1
+    dust_filter_range_growth: 0.02
+    dust_filter_min_density: 20
+
+    # ---- 降采样 ----
+    enable_downsample: true
+    downsample_leaf_size: 0.05
+
+    # ---- 统计离群点过滤 ----
+    enable_outlier_filter: true
+    outlier_mean_k: 20
+    outlier_std_mul: 1.0
+
+    # ---- 高度平滑（水平邻域高度平均）----
+    enable_smooth: true
+    smooth_k_neighbors: 16

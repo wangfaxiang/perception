@@ -159,6 +159,15 @@ sensor_msgs::msg::PointCloud2 buildCloudFromIndices(
 sensor_msgs::msg::PointCloud2 concatenateClouds(
   const sensor_msgs::msg::PointCloud2 & a, const sensor_msgs::msg::PointCloud2 & b)
 {
+  // 空点云（如 RANSAC 拟合不到平面时地面为空）的 point_step=0、data 为空，
+  // 直接拼接会在空 buffer 上 memcpy 导致段错误；任一方为空时返回另一方。
+  if (a.width == 0 && a.data.empty()) {
+    return b;
+  }
+  if (b.width == 0 && b.data.empty()) {
+    return a;
+  }
+
   sensor_msgs::msg::PointCloud2 out;
   out.header = a.header;
   out.height = 1;
@@ -602,8 +611,12 @@ void RANSACGroundFilterComponent::onPointCloud(const sensor_msgs::msg::PointClou
   pub_upper_ground_filter_->publish(*upper_ground_filtered);
   pub_below_ground_->publish(*below_ground);
 
-  // 平滑：对 all_filter（地面 + 地下）做降采样 + 高度平滑，并分离出平滑地面点
-  processSmoothedCloud(*all_filtered, *smoothed_merged, *smoothed_ground, *smoothed_upper);
+  // 平滑：对「地面 + 过滤后地上」做降采样 + 高度平滑，并分离出平滑地面/地上点。
+  // 话题 smoothed_upper_and_ground 的语义应为「地面 + 地上」（障碍物检测输入），
+  // 而 all_filter 只含「地面 + 地下」（边坡/悬崖检测用），直接用 all_filter 会漏掉地上障碍物。
+  PointCloud2::SharedPtr ground_upper_merged(new PointCloud2);
+  *ground_upper_merged = concatenateClouds(*ground, *upper_ground_filtered);
+  processSmoothedCloud(*ground_upper_merged, *smoothed_merged, *smoothed_ground, *smoothed_upper);
 
   // all_filter = 平滑地面点(smoothed_ground) + 地下点(below_ground)，供边坡/悬崖检测；
   // 拟合不到平面时保底使用整帧除尘结果

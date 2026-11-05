@@ -21,7 +21,7 @@ find_package(dth_messages REQUIRED)
 find_package(box_msg REQUIRED)
 # 运行期依赖：launch 需解析 perception_common 共享参数 share 目录；源码用其 motion_state.hpp
 find_package(perception_common REQUIRED)
-find_package(PCL REQUIRED COMPONENTS common filters)
+find_package(PCL REQUIRED COMPONENTS common filters io)
 
 include_directories(${PCL_INCLUDE_DIRS})
 
