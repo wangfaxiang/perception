@@ -8,9 +8,9 @@ rear:
       data_process_queue_max: 0         # 任务队列上限, 0 表示不限制
       data_process_overflow_policy: "block"  # 队列满策略: block/discard_new/discard_old/throw
 
-      device_ip: "192.168.1.201"  # 后雷达IP地址
-      msop_port: 2370             # 后雷达目的数据端口
-      difop_port: 2371            # 后雷达目的设备端口
+      device_ip: "192.168.6.224"  # 后雷达IP地址
+      msop_port: 6699             # 后雷达目的数据端口
+      difop_port: 7788            # 后雷达目的设备端口
 
       # device_ip: "192.168.1.200"  # 前雷达IP地址
       # msop_port: 2368             # 前雷达目的数据端口

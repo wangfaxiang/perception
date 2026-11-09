@@ -16,8 +16,8 @@
 elevation_obstacle_detection_front:
   ros__parameters:
     lidar_name: "front"
-    # input_topic: "/front/leveled_filtered_smoothed"
-    input_topic: "/front/smoothed_upper_and_ground"
+    input_topic: "/front/leveled_filtered_smoothed"
+    # input_topic: "/front/smoothed_upper_and_ground"
     frame_id: "front_rslidar"
 
     obstacle_cloud_topic: "/front/elevation_obstacle/cloud"
@@ -25,13 +25,13 @@ elevation_obstacle_detection_front:
     marker_topic: "/front/elevation_obstacle/marker"
     ground_grid_topic: "/front/elevation_obstacle/ground_grid"
 
-    max_range: 20.0          # 只取水平距离 20m 内的点
+    max_range: 8.0          # 只取水平距离 20m 内的点
     min_range: 0.3           # 最小水平距离(m)，近处车身/盲区点丢弃
     grid_size_m: 0.3         # 栅格边长(m)
     ground_window: 1         # DEM 低通邻域半径(格数)，1=3x3
-    height_threshold: 0.25   # 相对局部地面高度差阈值(m)
+    height_threshold: 0.30   # 相对局部地面高度差阈值(m)
     cluster_tolerance: 0.5   # 欧氏聚类距离容差(m)
-    min_cluster_size: 10     # 每簇最少点数
+    min_cluster_size: 50     # 每簇最少点数
     max_cluster_size: 100000 # 每簇最多点数
     publish_ground_grid: true  # 是否发布局部参考地面栅格点云（调试用）
 

@@ -91,6 +91,10 @@ ros2 launch lidar_leveling lidar_leveling.launch.py
 /front/rslidar_points_leveled
 /rear/rslidar_points_leveled
 
+# 点云预处理节点
+ros2 launch pointcloud_preprocess pointcloud_preprocess.launch.py
+# 局部高度差聚类
+ros2 launch elevation_obstacle_detection elevation_obstacle_detection.launch.py
 -------------------------------------------------------------------------------------------
 
 ## 启动边坡，沟壑检测节点

@@ -12,7 +12,10 @@
  *   3) 体素降采样（VoxelGrid，leaf_size 可配置）
  *   4) 统计离群点过滤（StatisticalOutlierRemoval，剔除孤立噪点/扬尘残留）
  *   5) 水平邻域高度平均平滑（参考 ransac 的 smoothHeightCloud，k 近邻可配置）
- *   发布 /<lidar>/leveled_filtered_smoothed 给 elevation_obstacle_detection
+ *   发布三个中间产物话题：
+ *     /<lidar>/leveled_dust_filtered    除尘后点云
+ *     /<lidar>/leveled_downsampled      降采样后点云
+ *     /<lidar>/leveled_filtered_smoothed 高度平滑后点云（elevation_obstacle_detection 输入）
  */
 
 #include <rclcpp/rclcpp.hpp>
@@ -31,8 +34,10 @@
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <deque>
 #include <string>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 namespace
@@ -93,6 +98,10 @@ public:
       "input_topic", prefix + "/rslidar_points_leveled");
     output_topic_ = declare_parameter<std::string>(
       "output_topic", prefix + "/leveled_filtered_smoothed");
+    dust_filtered_topic_ = declare_parameter<std::string>(
+      "dust_filtered_topic", prefix + "/leveled_dust_filtered");
+    downsampled_topic_ = declare_parameter<std::string>(
+      "downsampled_topic", prefix + "/leveled_downsampled");
     // 输出 frame_id：为空则沿用输入点云的 frame_id
     frame_id_ = declare_parameter<std::string>("frame_id", "");
 
@@ -108,6 +117,10 @@ public:
     if (dust_min_density_ < 1) dust_min_density_ = 1;
     if (dust_range_res_ <= 0.0) dust_range_res_ = 0.1;
     if (dust_range_growth_ < 0.0) dust_range_growth_ = 0.0;
+    // 时序累积：共 dust_filter_history_frames_ + 1 帧（当前 + 历史）参与密度统计
+    dust_filter_history_frames_ =
+      declare_parameter<int>("dust_filter_history_frames", 1);
+    if (dust_filter_history_frames_ < 0) dust_filter_history_frames_ = 0;
 
     // ---- 降采样 ----
     enable_downsample_ = declare_parameter<bool>("enable_downsample", true);
@@ -128,17 +141,24 @@ public:
       input_topic_, rclcpp::SensorDataQoS(),
       std::bind(&PointCloudPreprocess::onCloud, this, std::placeholders::_1));
     pub_ = create_publisher<sensor_msgs::msg::PointCloud2>(output_topic_, rclcpp::QoS(10));
+    pub_dust_filtered_ =
+      create_publisher<sensor_msgs::msg::PointCloud2>(dust_filtered_topic_, rclcpp::QoS(10));
+    pub_downsampled_ =
+      create_publisher<sensor_msgs::msg::PointCloud2>(downsampled_topic_, rclcpp::QoS(10));
 
     RCLCPP_INFO(this->get_logger(),
-                "Point cloud preprocessing started (lidar=%s): %s -> %s, "
-                "dust_filter=%s [%.1f°/%.1f°/%.2fm+%.2f, min_density=%d], "
+                "Point cloud preprocessing started (lidar=%s): %s -> dust_filtered=%s -> "
+                "downsampled=%s -> smoothed=%s, "
+                "dust_filter=%s [%.1f°/%.1f°/%.2fm+%.2f, min_density=%d, history=%d], "
                 "downsample=%s [leaf=%.2fm], outlier=%s [k=%d, std=%.1f], "
                 "smooth=%s [k=%d], frame=%s",
                 lidar_name.empty() ? "single" : lidar_name.c_str(),
-                input_topic_.c_str(), output_topic_.c_str(),
+                input_topic_.c_str(), dust_filtered_topic_.c_str(),
+                downsampled_topic_.c_str(), output_topic_.c_str(),
                 enable_dust_filter_ ? "on" : "off",
                 dust_horiz_angle_res_deg_, dust_vert_angle_res_deg_,
                 dust_range_res_, dust_range_growth_, dust_min_density_,
+                dust_filter_history_frames_,
                 enable_downsample_ ? "on" : "off", downsample_leaf_size_,
                 enable_outlier_filter_ ? "on" : "off", outlier_mean_k_, outlier_std_mul_,
                 enable_smooth_ ? "on" : "off", smooth_k_neighbors_,
@@ -154,7 +174,15 @@ private:
       applyDustFilter(*msg, dust_filtered);
     } else {
       dust_filtered = *msg;
+      dust_history_.clear();  // 关闭除尘时清空历史，避免陈旧帧影响后续开启
     }
+
+    // 发布除尘后点云
+    sensor_msgs::msg::PointCloud2 dust_filtered_out = dust_filtered;
+    dust_filtered_out.header.stamp = msg->header.stamp;
+    dust_filtered_out.header.frame_id =
+      frame_id_.empty() ? msg->header.frame_id : frame_id_;
+    pub_dust_filtered_->publish(dust_filtered_out);
 
     // 2) 转 PCL、移除 NaN
     pcl::PointCloud<pcl::PointXYZI>::Ptr cloud(new pcl::PointCloud<pcl::PointXYZI>());
@@ -174,6 +202,14 @@ private:
     } else {
       downsampled = cloud;
     }
+
+    // 发布降采样后点云（体素降采样，离群点过滤前）
+    sensor_msgs::msg::PointCloud2 downsampled_out;
+    pcl::toROSMsg(*downsampled, downsampled_out);
+    downsampled_out.header.stamp = msg->header.stamp;
+    downsampled_out.header.frame_id =
+      frame_id_.empty() ? msg->header.frame_id : frame_id_;
+    pub_downsampled_->publish(downsampled_out);
 
     // 4) 统计离群点过滤（剔除孤立噪点/扬尘残留）
     pcl::PointCloud<pcl::PointXYZI>::Ptr denoised(new pcl::PointCloud<pcl::PointXYZI>());
@@ -210,8 +246,8 @@ private:
     const double horiz_angle_res = dust_horiz_angle_res_deg_ * kDeg2Rad;
     const double vert_angle_res = dust_vert_angle_res_deg_ * kDeg2Rad;
 
-    // 单帧网格密度法：统计每个球坐标 bin 内的点数，
-    // 点数 < dust_min_density_ 的网格判为扬尘，剔除该网格内全部点。
+    // 单帧球坐标网格密度法：把调平点云划分成 (水平角, 垂直角, 距离) 网格，
+    // 网格内点数 < dust_min_density_ 判为扬尘，整格剔除（全部点云参与除尘）。
     sensor_msgs::PointCloud2ConstIterator<float> it_x(input, "x");
     sensor_msgs::PointCloud2ConstIterator<float> it_y(input, "y");
     sensor_msgs::PointCloud2ConstIterator<float> it_z(input, "z");
@@ -247,7 +283,9 @@ private:
       ++bin_count[key];
     }
 
-    // 第二遍：密度低于阈值的网格判为扬尘，剔除；非有限点原样保留
+    // 第二遍：统计「当前帧 + 历史帧」累积密度，低于阈值的网格判为扬尘剔除。
+    // 灰尘是浮动的，两帧在同一个网格里不会稳定叠加；固定障碍物两帧都会落入同一网格，
+    // 因此累积密度能更彻底地剔除灰尘、保留真实障碍物。非有限点原样保留。
     std::vector<std::size_t> keep_idx;
     keep_idx.reserve(num_points);
     for (std::size_t j = 0; j < num_points; ++j) {
@@ -256,11 +294,27 @@ private:
         keep_idx.push_back(j);
         continue;
       }
+      std::uint64_t total = 0;
       const auto it = bin_count.find(key);
-      if (it != bin_count.end() &&
-          it->second >= static_cast<std::uint32_t>(dust_min_density_))
-      {
+      if (it != bin_count.end()) {
+        total += it->second;
+      }
+      for (const auto & hist : dust_history_) {
+        const auto hit = hist.find(key);
+        if (hit != hist.end()) {
+          total += hit->second;
+        }
+      }
+      if (total >= static_cast<std::uint64_t>(dust_min_density_)) {
         keep_idx.push_back(j);
+      }
+    }
+
+    // 保存当前帧 bin 计数作为下一帧的历史（最多保留 dust_filter_history_frames_ 帧）
+    if (dust_filter_history_frames_ > 0) {
+      dust_history_.push_back(std::move(bin_count));
+      while (static_cast<int>(dust_history_.size()) > dust_filter_history_frames_) {
+        dust_history_.pop_front();
       }
     }
 
@@ -313,13 +367,18 @@ private:
 
   rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr sub_;
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pub_;
+  rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pub_dust_filtered_;
+  rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pub_downsampled_;
 
   std::string input_topic_, output_topic_, frame_id_;
+  std::string dust_filtered_topic_, downsampled_topic_;
 
   bool enable_dust_filter_;
   double dust_horiz_angle_res_deg_, dust_vert_angle_res_deg_;
   double dust_range_res_, dust_range_growth_;
   int dust_min_density_;
+  int dust_filter_history_frames_;
+  std::deque<std::unordered_map<std::int64_t, std::uint32_t>> dust_history_;
 
   bool enable_downsample_;
   double downsample_leaf_size_;

@@ -619,21 +619,24 @@ void RANSACGroundFilterComponent::onPointCloud(const sensor_msgs::msg::PointClou
   processSmoothedCloud(*ground_upper_merged, *smoothed_merged, *smoothed_ground, *smoothed_upper);
 
   // all_filter = 平滑地面点(smoothed_ground) + 地下点(below_ground)，供边坡/悬崖检测；
-  // 拟合不到平面时保底使用整帧除尘结果
+  // 拟合不到平面时保底使用整帧除尘结果，后续在发布前做「降采样 → 离群点过滤 → 高度平滑」。
   PointCloud2::SharedPtr all_filter_combined(new PointCloud2);
+  bool all_filter_fallback = false;   // 拟合不到平面的兜底标志
   if (has_valid_plane_) {
     *all_filter_combined = concatenateClouds(*smoothed_ground, *below_ground);
   } else {
     *all_filter_combined = *all_filtered;
+    all_filter_fallback = true;
   }
   all_filter_combined->header.frame_id = base_frame_;
 
-  // 发布 all_filter 前：体素降采样 + 统计离群点过滤（PointXYZI，保留 intensity）
+  // 发布 all_filter 前：体素降采样 → 统计离群点过滤 →（兜底时）高度平滑
   PointCloud2::SharedPtr all_filter_pub(new PointCloud2);
   {
     pcl::PointCloud<pcl::PointXYZI> pcl_all;
     pcl::fromROSMsg(*all_filter_combined, pcl_all);
 
+    // 1) 体素降采样
     pcl::PointCloud<pcl::PointXYZI> pcl_work;
     if (enable_all_filter_downsample_ && all_filter_leaf_size_ > 0.0) {
       pcl::VoxelGrid<pcl::PointXYZI> vg;
@@ -646,7 +649,7 @@ void RANSACGroundFilterComponent::onPointCloud(const sensor_msgs::msg::PointClou
       pcl_work = pcl_all;
     }
 
-    // 统计离群点过滤：剔除 k 近邻平均距离明显偏大的孤立点（扬尘残留等）
+    // 2) 统计离群点过滤：剔除 k 近邻平均距离明显偏大的孤立点（扬尘残留等）
     if (enable_all_filter_outlier_ &&
         pcl_work.size() > static_cast<size_t>(all_filter_outlier_mean_k_))
     {
@@ -657,6 +660,13 @@ void RANSACGroundFilterComponent::onPointCloud(const sensor_msgs::msg::PointClou
       pcl::PointCloud<pcl::PointXYZI> pcl_filtered;
       sor.filter(pcl_filtered);
       pcl_work = pcl_filtered;
+    }
+
+    // 3) 拟合不到平面时：最后做高度平滑（只做水平邻域高度平均，不再内部降采样）
+    if (all_filter_fallback) {
+      pcl::PointCloud<pcl::PointXYZI> pcl_smoothed;
+      smoothHeightCloud(pcl_work, pcl_smoothed, false);
+      pcl_work = pcl_smoothed;
     }
 
     pcl::toROSMsg(pcl_work, *all_filter_pub);
@@ -922,7 +932,8 @@ bool RANSACGroundFilterComponent::filter(
 }
 
 void RANSACGroundFilterComponent::smoothHeightCloud(
-  const pcl::PointCloud<pcl::PointXYZI> & input, pcl::PointCloud<pcl::PointXYZI> & output)
+  const pcl::PointCloud<pcl::PointXYZI> & input, pcl::PointCloud<pcl::PointXYZI> & output,
+  bool enable_voxel)
 {
   output.clear();
   if (input.empty()) {
@@ -930,8 +941,9 @@ void RANSACGroundFilterComponent::smoothHeightCloud(
   }
 
   // 1) 体素降采样（VoxelGrid 对体素内点求质心，intensity 取平均，强度得以保留）
+  //    enable_voxel=false 时跳过（调用方已自行降采样，仅做高度平均）
   pcl::PointCloud<pcl::PointXYZI>::Ptr downsampled(new pcl::PointCloud<pcl::PointXYZI>);
-  if (smooth_leaf_size_ > 0.0) {
+  if (enable_voxel && smooth_leaf_size_ > 0.0) {
     pcl::VoxelGrid<pcl::PointXYZI> vg;
     vg.setInputCloud(input.makeShared());
     vg.setLeafSize(

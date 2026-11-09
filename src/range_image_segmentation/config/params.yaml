@@ -46,7 +46,8 @@ range_image_segmentation_front:
     cluster_gap_range: 1.0   # 相邻两点 range 差大于该值视为不同簇(m)
     cluster_gap_dist: 1.0    # 相邻两点欧氏距离大于该值视为不同簇(m)
     cluster_min_points: 5   # 每簇最少点数，少于该值的簇过滤
-    edge_smooth_enable: true   # 是否对每簇折线做平滑（每点与前后各 2 点取平均）
+    edge_smooth_enable: true   # 是否对每簇折线做平滑
+    smooth_window: 3           # 居中滑动平均窗口点数（自动取奇数，两侧对称；<=1 或平滑关闭时不生效）
 
     # ---- 障碍物框过滤：订阅 cluster 的全量框，剔除框内由地面障碍物/推进梁形成的假边缘 ----
     box_topic: "/front/box/cluster/euclidean_all"   # 全量框话题（cluster 发布，不过滤）
@@ -95,7 +96,8 @@ range_image_segmentation_rear:
     cluster_gap_range: 1.0   # 相邻两点 range 差大于该值视为不同簇(m)
     cluster_gap_dist: 1.0    # 相邻两点欧氏距离大于该值视为不同簇(m)
     cluster_min_points: 5   # 每簇最少点数，少于该值的簇过滤
-    edge_smooth_enable: true   # 是否对每簇折线做平滑（每点与前后各 2 点取平均）
+    edge_smooth_enable: true   # 是否对每簇折线做平滑
+    smooth_window: 3           # 居中滑动平均窗口点数（自动取奇数，两侧对称；<=1 或平滑关闭时不生效）
 
     # ---- 障碍物框过滤：订阅 cluster 的全量框，剔除框内由地面障碍物/推进梁形成的假边缘 ----
     box_topic: "/rear/box/cluster/euclidean_all"   # 全量框话题（cluster 发布，不过滤）

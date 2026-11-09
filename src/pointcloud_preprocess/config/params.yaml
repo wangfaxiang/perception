@@ -1,8 +1,10 @@
 # 调平点云预处理参数（扬尘过滤 → 降采样 → 离群点过滤 → 高度平滑）
 #
 # 输入：lidar_leveling 输出的调平点云（/front|rear/rslidar_points_leveled）
-# 输出：给 elevation_obstacle_detection 障碍物检测使用的点云
-#       （/front|rear/leveled_filtered_smoothed）
+# 输出三个中间产物话题：
+#   除尘后点云   /front|rear/leveled_dust_filtered
+#   降采样点云   /front|rear/leveled_downsampled
+#   高度平滑点云 /front|rear/leveled_filtered_smoothed（elevation_obstacle_detection 输入）
 #
 # 与 ransac_ground_filter 的差异：本节点「全量」处理，不做地面/非地面分割。
 # 四步均可独立开关，参数全部可配置。
@@ -14,16 +16,19 @@ pointcloud_preprocess_front:
   ros__parameters:
     lidar_name: "front"
     input_topic: "/front/rslidar_points_leveled"            # 订阅：调平后点云
-    output_topic: "/front/leveled_filtered_smoothed"        # 发布：预处理后点云（障碍物检测输入）
+    output_topic: "/front/leveled_filtered_smoothed"        # 发布：高度平滑后点云（障碍物检测输入）
+    dust_filtered_topic: "/front/leveled_dust_filtered"     # 发布：除尘后点云
+    downsampled_topic: "/front/leveled_downsampled"         # 发布：降采样后点云
     frame_id: ""                                            # 输出 frame_id，为空则沿用输入
 
     # ---- 扬尘过滤（单帧球坐标网格密度法，全量）----
     enable_dust_filter: true
-    dust_filter_horiz_angle_resolution: 1.0   # 水平角分辨率（°）
-    dust_filter_vert_angle_resolution: 1.0    # 垂直角分辨率（°）
-    dust_filter_range_resolution: 0.1         # 近处基准距离分辨率（m）
+    dust_filter_horiz_angle_resolution: 2.0   # 水平角分辨率（°）
+    dust_filter_vert_angle_resolution: 2.0    # 垂直角分辨率（°）
+    dust_filter_range_resolution: 0.05         # 近处基准距离分辨率（m）
     dust_filter_range_growth: 0.02            # bin 宽随距离线性增长率（每米增加 0.02m）
-    dust_filter_min_density: 20               # 网格内点数 < 该阈值 → 判为扬尘剔除
+    dust_filter_min_density: 50                # 网格内点数 < 该阈值 → 判为扬尘剔除（当前帧+历史帧累积）
+    dust_filter_history_frames: 0            # 额外累积的历史帧数，共 history+1 帧参与密度统计
 
     # ---- 降采样 ----
     enable_downsample: true
@@ -44,6 +49,8 @@ pointcloud_preprocess_rear:
     lidar_name: "rear"
     input_topic: "/rear/rslidar_points_leveled"
     output_topic: "/rear/leveled_filtered_smoothed"
+    dust_filtered_topic: "/rear/leveled_dust_filtered"
+    downsampled_topic: "/rear/leveled_downsampled"
     frame_id: ""
 
     # ---- 扬尘过滤（单帧球坐标网格密度法，全量）----
@@ -52,7 +59,8 @@ pointcloud_preprocess_rear:
     dust_filter_vert_angle_resolution: 1.0
     dust_filter_range_resolution: 0.1
     dust_filter_range_growth: 0.02
-    dust_filter_min_density: 20
+    dust_filter_min_density: 50
+    dust_filter_history_frames: 1
 
     # ---- 降采样 ----
     enable_downsample: true

@@ -96,7 +96,8 @@ private:
    * 对 all_filter（地面 + 过滤后地上）做体素降采样 + 水平邻域高度平均，输出平滑点云
    */
   void smoothHeightCloud(
-    const pcl::PointCloud<pcl::PointXYZI> & input, pcl::PointCloud<pcl::PointXYZI> & output);
+    const pcl::PointCloud<pcl::PointXYZI> & input, pcl::PointCloud<pcl::PointXYZI> & output,
+    bool enable_voxel = true);
 
   /*!
    * 对 all_filter 做平滑后，再按本帧 RANSAC 平面分离为地面 / 非地面（地上）两路点云
