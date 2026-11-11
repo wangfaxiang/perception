@@ -35,6 +35,21 @@ elevation_obstacle_detection_front:
     max_cluster_size: 100000 # 每簇最多点数
     publish_ground_grid: true  # 是否发布局部参考地面栅格点云（调试用）
 
+    # ---- 障碍物告警（与 cluster 一致：本实例只发「单雷达原始告警」，由 warning_fusion 融合）----
+    obstacle_warning_raw_topic: "/elevation_obstacle_detection_front/obstacle_warning_raw"
+    obstacle_type: 3            # 3=其他；本节点只做几何检测，无类别识别（可强制 1=人员 / 2=车辆）
+    obstacle_heartbeat_hz: 10.0 # 心跳频率（必须 ≥5Hz）
+    obstacle_timeout_s: 0.5     # 点云断流超过该时长 → 输出安全默认值
+    # 上报/急停阈值 obstacle_warn_dist / obstacle_danger_dist 的唯一真源在
+    # perception_common/config/params.yaml 的 /** 共享段（launch 会同时加载）
+
+    # ---- 定向检测门控（与 cluster/边坡检测共用 perception_common/motion_state.hpp）----
+    motion_gate_enable: true
+    motion_cmd_topic: "/control/cmd_gate/cmd_vel"
+    motion_v_thresh: 0.05      # 纵向速度阈值（m/s）
+    motion_w_thresh: 0.05      # 角速度阈值（rad/s）
+    motion_timeout_s: 0.5      # 镜像断流超时（秒）→ 按停车处理
+
 # ============ 后雷达 (rear) ============
 elevation_obstacle_detection_rear:
   ros__parameters:
@@ -56,3 +71,16 @@ elevation_obstacle_detection_rear:
     min_cluster_size: 10
     max_cluster_size: 100000
     publish_ground_grid: true
+
+    # ---- 障碍物告警（同 front 段语义）----
+    obstacle_warning_raw_topic: "/elevation_obstacle_detection_rear/obstacle_warning_raw"
+    obstacle_type: 3
+    obstacle_heartbeat_hz: 10.0
+    obstacle_timeout_s: 0.5
+
+    # ---- 定向检测门控（同 front 段语义）----
+    motion_gate_enable: true
+    motion_cmd_topic: "/control/cmd_gate/cmd_vel"
+    motion_v_thresh: 0.05
+    motion_w_thresh: 0.05
+    motion_timeout_s: 0.5

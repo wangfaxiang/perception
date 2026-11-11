@@ -447,6 +447,7 @@ private:
     const bool edge_ready = debounce_edge_.active;
     const bool obstacle_ready = debounce_obstacle_.active;
 
+    // 最终停车电平：任一来源停车即停车，二者都解除才解除（契约 §7 锁存语义）。
     // reason 取数值最小者 = 优先级最高（人员 1 > 车辆 2 > 其他 3 > 边坡 4）：
     // 契约未规定两类同时成立时的取舍，此处按 §5.1 枚举数值顺序（与 §3.1 类别优先一致）取最严者。
     uint8_t reason = StopCommand::REASON_NONE;
@@ -454,10 +455,13 @@ private:
     if (obstacle_ready && (reason == StopCommand::REASON_NONE || obstacle_out.obstacle_type < reason))
       reason = obstacle_out.obstacle_type;
 
+    const bool edge_stop = stop_on_danger_ && edge_ready;
+    const bool obstacle_stop = stop_on_danger_ && obstacle_ready;
+    const bool stop = edge_stop || obstacle_stop;
+
     StopCommand stop_msg;
     stop_msg.header.stamp = now;  // 契约 §4.3: 每帧填节点时钟 now()
     stop_msg.header.frame_id = frame_id_;
-    const bool stop = stop_on_danger_ && (reason != StopCommand::REASON_NONE);
     if (stop)
     {
       stop_msg.stop = true;
@@ -482,47 +486,74 @@ private:
     }
     pub_stop_->publish(stop_msg);
 
-    if (stop != last_stop_)
+    // ---- 日志 / 落盘：按来源各自独立记录触发/解除边沿（on-vehicle 调试）----
+    // ① 任一来源进入停车 → 记该来源「触发」并落盘该来源对应点云；即使另一来源已在停车
+    //    （总 stop 早已为 true），也照记，不错过第二个来源的触发。
+    // ② 任一来源退出停车 → 记该来源「解除」；总 stop 是否仍为 true 由另一来源决定，
+    //    故总解除不再单独写一行（两个来源的解除各自有独立一行）。
+    // ③ 最终 stop 电平已由 stop = edge_stop || obstacle_stop 表达（任一停车即停车，二者都解除才解除）。
+
+    // 边坡来源
+    if (edge_stop != last_edge_stop_)
     {
-      if (stop)
+      if (edge_stop)
       {
-        RCLCPP_WARN(this->get_logger(),
-                    "急停触发: stop=true reason=%s (%s, 置信度 %.2f) —— 系统侧锁存，需操作员复位",
-                    reasonName(reason), stop_msg.description.c_str(), stop_msg.confidence);
-
-        // ---- 调试辅助：停车触发 → 写事件日志 + 触发帧原始点云落盘 ----
-        // stop 的上升沿出现在「连续 stop_debounce_frames_ 帧危险」之后（默认 2 帧），
-        // 因此此处保存的正是第二帧报警对应的那一帧原始点云。
-        const bool is_slope = (reason == StopCommand::REASON_EDGE_DANGER);
-        const std::string side = is_slope ? (front_edge_wins ? "front" : "rear")
-                                          : (front_obstacle_wins ? "front" : "rear");
-        // 触发告警里透传的源点云时间戳（cluster/range_image 发布原始告警时填入），
-        // 用它在环形缓冲里精确取同一时刻的原始点云。
+        const std::string side = front_edge_wins ? "front" : "rear";
         const rclcpp::Time src_stamp =
-            is_slope ? rclcpp::Time((front_edge_wins ? front_edge : rear_edge).header.stamp)
-                     : rclcpp::Time((front_obstacle_wins ? front_obstacle : rear_obstacle).header.stamp);
+            rclcpp::Time((front_edge_wins ? front_edge : rear_edge).header.stamp);
+        const float conf = confidenceOf(edge_out.dist_to_edge_m, edge_danger_dist_);
+        const std::string desc = std::string(front_edge_wins ? "前方 " : "后方 ") +
+                                 formatDist(edge_out.dist_to_edge_m) + " 边坡";
         std::string match_note;
-        const std::string pcd_path = saveTriggerPcd(side, src_stamp, is_slope, match_note);
+        const std::string pcd_path = saveTriggerPcd(side, src_stamp, true, match_note);
 
+        RCLCPP_WARN(this->get_logger(),
+                    "边坡急停触发: %s 置信度 %.2f —— 系统侧锁存，需操作员复位",
+                    desc.c_str(), conf);
         char line[640];
         std::snprintf(line, sizeof(line),
-                      "停车报警触发: reason=%s desc=%s 置信度=%.2f 触发侧=%s 源点云stamp=%.3f 取帧=%s%s%s",
-                      reasonName(reason), stop_msg.description.c_str(), stop_msg.confidence,
-                      side.c_str(), src_stamp.seconds(), match_note.c_str(),
+                      "边坡停车报警触发: desc=%s 置信度=%.2f 触发侧=%s 源点云stamp=%.3f 取帧=%s%s%s",
+                      desc.c_str(), conf, side.c_str(), src_stamp.seconds(),
+                      match_note.c_str(), pcd_path.empty() ? "" : " 点云=", pcd_path.c_str());
+        logStopEvent(line);
+      }
+      else
+      {
+        RCLCPP_INFO(this->get_logger(), "边坡急停解除: stop=false");
+        logStopEvent("边坡停车报警解除");
+      }
+      last_edge_stop_ = edge_stop;
+    }
+
+    // 障碍物来源
+    if (obstacle_stop != last_obstacle_stop_)
+    {
+      if (obstacle_stop)
+      {
+        const std::string side = front_obstacle_wins ? "front" : "rear";
+        const rclcpp::Time src_stamp =
+            rclcpp::Time((front_obstacle_wins ? front_obstacle : rear_obstacle).header.stamp);
+        const float conf = confidenceOf(obstacle_out.dist_m, obstacle_danger_dist_);
+        std::string match_note;
+        const std::string pcd_path = saveTriggerPcd(side, src_stamp, false, match_note);
+
+        RCLCPP_WARN(this->get_logger(),
+                    "障碍物急停触发: reason=%s (%s, 置信度 %.2f) —— 系统侧锁存，需操作员复位",
+                    reasonName(obstacle_out.obstacle_type), obstacle_out.description.c_str(), conf);
+        char line[640];
+        std::snprintf(line, sizeof(line),
+                      "障碍物停车报警触发: reason=%s desc=%s 置信度=%.2f 触发侧=%s 源点云stamp=%.3f 取帧=%s%s%s",
+                      reasonName(obstacle_out.obstacle_type), obstacle_out.description.c_str(),
+                      conf, side.c_str(), src_stamp.seconds(), match_note.c_str(),
                       pcd_path.empty() ? "" : " 点云=", pcd_path.c_str());
         logStopEvent(line);
       }
       else
       {
-        RCLCPP_INFO(this->get_logger(), "急停解除: stop=false (边坡 %s / 障碍物 %s)",
-                    levelName(edge_out.level), threatDistName(obstacle_out).c_str());
-
-        char line[256];
-        std::snprintf(line, sizeof(line), "停车报警解除: stop=false (边坡 %s / 障碍物 %s)",
-                      levelName(edge_out.level), threatDistName(obstacle_out).c_str());
-        logStopEvent(line);
+        RCLCPP_INFO(this->get_logger(), "障碍物急停解除: stop=false");
+        logStopEvent("障碍物停车报警解除");
       }
-      last_stop_ = stop;
+      last_obstacle_stop_ = obstacle_stop;
     }
 
     char buf[320];
@@ -542,7 +573,7 @@ private:
                   rear_obstacle_stale ? "/断流" : "",
                   threatName(obstacle_out), obstacle_out.dist_m,
                   front_obstacle_wins ? "前" : "后",
-                  last_stop_ ? "ON" : "off", reasonName(reason));
+                  stop ? "ON" : "off", reasonName(reason));
     RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 1000, "%s", buf);
   }
 
@@ -796,7 +827,8 @@ private:
   bool edge_stop_latched_{false};          // 边坡急停滞回锁存（进入危险区置位）
   double obstacle_stop_hysteresis_m_{0.5}; // 障碍物急停滞回量（米），0 = 关闭滞回
   bool obstacle_stop_latched_{false};      // 障碍物急停滞回锁存（进入危险区置位）
-  bool last_stop_{false};             // 上一周期 stop 电平（仅用于状态翻转日志）
+  bool last_edge_stop_{false};             // 上一周期边坡停车电平（按源独立记录触发/解除边沿）
+  bool last_obstacle_stop_{false};         // 上一周期障碍物停车电平（按源独立记录触发/解除边沿）
 };
 
 int main(int argc, char **argv)

@@ -12,7 +12,9 @@ def generate_launch_description():
     """
 
     pkg_share = get_package_share_directory('elevation_obstacle_detection')
+    shared_share = get_package_share_directory('perception_common')
     config_file = os.path.join(pkg_share, 'config', 'params.yaml')
+    shared_file = os.path.join(shared_share, 'config', 'params.yaml')
 
     return LaunchDescription([
         # 前雷达：输入 /front/leveled_filtered_smoothed
@@ -21,7 +23,7 @@ def generate_launch_description():
             executable='elevation_obstacle_detection_node',
             name='elevation_obstacle_detection_front',
             output='screen',
-            parameters=[config_file],
+            parameters=[shared_file, config_file],
         ),
         # 后雷达：输入 /rear/leveled_filtered_smoothed
         Node(
@@ -29,6 +31,6 @@ def generate_launch_description():
             executable='elevation_obstacle_detection_node',
             name='elevation_obstacle_detection_rear',
             output='screen',
-            parameters=[config_file],
+            parameters=[shared_file, config_file],
         ),
     ])

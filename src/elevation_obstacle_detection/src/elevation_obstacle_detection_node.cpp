@@ -24,8 +24,11 @@
 #include <visualization_msgs/msg/marker.hpp>
 #include <visualization_msgs/msg/marker_array.hpp>
 #include <geometry_msgs/msg/point.hpp>
+#include <std_msgs/msg/header.hpp>
 #include <box_msg/msg/boxs.hpp>
 #include <box_msg/msg/box.hpp>
+#include <dth_messages/msg/obstacle_warning.hpp>
+#include <perception_common/motion_state.hpp>
 
 #include <pcl_conversions/pcl_conversions.h>
 #include <pcl/point_cloud.h>
@@ -40,7 +43,11 @@
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
 #include <limits>
+#include <memory>
+#include <mutex>
+#include <stdexcept>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -61,6 +68,30 @@ inline int keyToGx(int64_t key)
 inline int keyToGy(int64_t key)
 {
   return static_cast<int>(static_cast<uint32_t>(key & 0xFFFFFFFFLL));
+}
+
+// 障碍物类别名（类型由参数指定：本节点只做几何检测，无类别识别能力）
+const char *obstacleLabel(int type)
+{
+  switch (type) {
+    case 1: return "人员";    // dth_messages/ObstacleWarning::TYPE_PERSON
+    case 2: return "车辆";    // TYPE_VEHICLE
+    default: return "障碍物";  // TYPE_OTHER
+  }
+}
+
+// 方位名（按本雷达坐标系：+x 前、+y 左，与消息 frame_id 声明的坐标系一致）
+const char *directionName(float x, float y)
+{
+  const double ang = std::atan2(static_cast<double>(y), static_cast<double>(x)) * 180.0 / M_PI;
+  if (ang >= -22.5 && ang < 22.5) return "前方";
+  if (ang >= 22.5 && ang < 67.5) return "左前";
+  if (ang >= 67.5 && ang < 112.5) return "左方";
+  if (ang >= 112.5 && ang < 157.5) return "左后";
+  if (ang >= 157.5 || ang < -157.5) return "后方";
+  if (ang >= -157.5 && ang < -112.5) return "右后";
+  if (ang >= -112.5 && ang < -67.5) return "右方";
+  return "右前";
 }
 }  // namespace
 
@@ -108,6 +139,52 @@ public:
     pub_ground_grid_ =
       create_publisher<sensor_msgs::msg::PointCloud2>(ground_grid_topic, rclcpp::QoS(10));
 
+    // ---- 障碍物告警（与 cluster 一致：本实例只发「单雷达原始告警」到节点私有话题，
+    // 契约话题 /perception/obstacle_warning 与 /perception/stop_command 由 perception_common 的
+    // warning_fusion 取类别优先者合并后发布）----
+    this->declare_parameter<std::string>("obstacle_warning_raw_topic", "~/obstacle_warning_raw");
+    this->declare_parameter<double>("obstacle_heartbeat_hz", 10.0);
+    this->declare_parameter<double>("obstacle_timeout_s", 0.5);
+    this->declare_parameter("obstacle_warn_dist", rclcpp::ParameterType::PARAMETER_DOUBLE);
+    this->declare_parameter("obstacle_danger_dist", rclcpp::ParameterType::PARAMETER_DOUBLE);
+    this->declare_parameter("obstacle_type", 3);
+    this->declare_parameter("motion_gate_enable", true);
+
+    this->get_parameter("obstacle_warning_raw_topic", obstacle_topic_);
+    this->get_parameter("obstacle_heartbeat_hz", obstacle_heartbeat_hz_);
+    this->get_parameter("obstacle_timeout_s", obstacle_timeout_s_);
+    this->get_parameter("obstacle_warn_dist", obstacle_warn_dist_);
+    this->get_parameter("obstacle_danger_dist", obstacle_danger_dist_);
+    this->get_parameter("obstacle_type", obstacle_type_);
+    this->get_parameter("motion_gate_enable", motion_gate_enable_);
+
+    if (!(obstacle_heartbeat_hz_ > 0.0)) obstacle_heartbeat_hz_ = 10.0;
+    obstacle_heartbeat_period_s_ = 1.0 / obstacle_heartbeat_hz_;
+    if (!(obstacle_warn_dist_ > 0.0))
+    {
+      RCLCPP_FATAL(get_logger(),
+                   "obstacle_warn_dist=%.1f 非法：须由 perception_common/config/params.yaml "
+                   "的 /** 共享段提供且 > 0", obstacle_warn_dist_);
+      throw std::runtime_error("invalid obstacle_warn_dist");
+    }
+    if (obstacle_type_ < 1 || obstacle_type_ > 3)
+    {
+      RCLCPP_FATAL(get_logger(),
+                   "obstacle_type=%d 非法：1=人员 / 2=车辆 / 3=其他（0 为契约保留值，禁止配置）",
+                   obstacle_type_);
+      throw std::runtime_error("invalid obstacle_type");
+    }
+
+    // 定向检测门控（与 cluster / 边坡检测共用同一份实现）
+    gate_ = std::make_unique<perception_common::MotionGate>(*this, lidar_name_);
+
+    publisher_obstacle_warning_ = create_publisher<dth_messages::msg::ObstacleWarning>(
+      obstacle_topic_, rclcpp::QoS(10));
+
+    obstacle_heartbeat_timer_ = create_wall_timer(
+      std::chrono::duration<double>(obstacle_heartbeat_period_s_),
+      std::bind(&ElevationObstacleDetector::onObstacleHeartbeat, this));
+
     RCLCPP_INFO(
       get_logger(),
       "elevation_obstacle_detection started (lidar_name=%s): input=%s, frame=%s, "
@@ -116,6 +193,13 @@ public:
       lidar_name_.c_str(), input_topic_.c_str(), frame_id_.c_str(),
       min_range_, max_range_, grid_size_m_, ground_window_, height_threshold_,
       cluster_tolerance_, min_cluster_size_);
+    RCLCPP_INFO(
+      get_logger(),
+      "障碍物告警: %s (强制类别=%s, warn_dist=%.1fm, heartbeat=%.1fHz, timeout=%.2fs)",
+      obstacle_topic_.c_str(), obstacleLabel(obstacle_type_),
+      obstacle_warn_dist_, obstacle_heartbeat_hz_, obstacle_timeout_s_);
+    RCLCPP_INFO(get_logger(), "定向检测门控: %s（%s）",
+      motion_gate_enable_ ? "on" : "off", gate_->describe().c_str());
   }
 
 private:
@@ -125,8 +209,40 @@ private:
     int count = 0;
   };
 
+  // 每个保留簇的几何摘要（与 Boxs.box 一一对应、同序），用于挑最近威胁物
+  struct BoxGeom
+  {
+    float near_x = 0.0f;      // 距雷达最近的点（水平距离最小）
+    float near_y = 0.0f;
+    float near_z = 0.0f;
+    float near_dist = 0.0f;   // hypot(near_x, near_y)，与契约 dist_m 自洽
+    size_t points = 0;        // 簇内点数
+  };
+
   void onCloud(const sensor_msgs::msg::PointCloud2::SharedPtr msg)
   {
+    // ---- 定向检测门控（与 cluster 一致）：前进只测前、后退只测后、停车/原地旋转双向均测 ----
+    const auto motion = gate_->state();
+    const bool detect = !motion_gate_enable_ || gate_->active();
+    if (motion != last_motion_)
+    {
+      RCLCPP_INFO(get_logger(), "%s 运动方向 %s → %s（%s）",
+                  perception_common::toString(gate_->side()),
+                  perception_common::toString(last_motion_),
+                  perception_common::toString(motion),
+                  detect ? "参与检测" : "门控跳过");
+      last_motion_ = motion;
+    }
+    if (!detect)
+    {
+      RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 2000,
+                           "%s 门控跳过障碍物检测（运动方向 %s），发布安全默认值",
+                           perception_common::toString(gate_->side()),
+                           perception_common::toString(motion));
+      publishSafeObstacle();
+      return;
+    }
+
     pcl::PointCloud<pcl::PointXYZ> cloud;
     pcl::fromROSMsg(*msg, cloud);
 
@@ -200,13 +316,17 @@ private:
       ec.extract(cluster_indices);
     }
 
-    // ---- 4) 每簇生成水平 PCA 包围盒 ----
+    // ---- 4) 每簇生成水平 PCA 包围盒（并记录最近点摘要供告警用）----
     box_msg::msg::Boxs boxs;
     boxs.header = msg->header;
+    std::vector<BoxGeom> geoms;
+    geoms.reserve(cluster_indices.size());
     for (const auto & indices : cluster_indices) {
       box_msg::msg::Box box;
-      computeClusterBox(indices, obstacle, box);
+      BoxGeom geom;
+      computeClusterBox(indices, obstacle, box, geom);
       boxs.box.push_back(box);
+      geoms.push_back(geom);
     }
 
     // ---- 发布 ----
@@ -214,6 +334,7 @@ private:
     publishGroundGrid(msg->header, cells);
     pub_boxs_->publish(boxs);
     pub_marker_->publish(boxsToMarkerArray(boxs, frame_id_));
+    publishObstacleWarning(boxs, geoms, msg->header);
 
     RCLCPP_INFO_THROTTLE(
       get_logger(), *get_clock(), 2000,
@@ -227,13 +348,25 @@ private:
   void computeClusterBox(
     const pcl::PointIndices & indices,
     const pcl::PointCloud<pcl::PointXYZ>::Ptr & cloud,
-    box_msg::msg::Box & box)
+    box_msg::msg::Box & box,
+    BoxGeom & geom)
   {
     const size_t n = indices.indices.size();
+
+    float near_x = 0.0f, near_y = 0.0f, near_z = 0.0f;
+    float near_dist = std::numeric_limits<float>::max();
+
     Eigen::Vector3f centroid = Eigen::Vector3f::Zero();
     for (const int index : indices.indices) {
       const auto & p = (*cloud)[index];
       centroid += Eigen::Vector3f(p.x, p.y, p.z);
+      const float d = std::hypot(p.x, p.y);
+      if (d < near_dist) {
+        near_dist = d;
+        near_x = p.x;
+        near_y = p.y;
+        near_z = p.z;
+      }
     }
     centroid /= static_cast<float>(n);
 
@@ -279,6 +412,12 @@ private:
     box.l = max_v - min_v;
     box.h = max_z - min_z;
     box.rt = std::atan2(u.y(), u.x());
+
+    geom.near_x = near_x;
+    geom.near_y = near_y;
+    geom.near_z = near_z;
+    geom.near_dist = near_dist;
+    geom.points = n;
   }
 
   void publishCloud(
@@ -447,6 +586,146 @@ private:
     return marker_array;
   }
 
+  // ---- 障碍物告警（与 cluster 一致）：从已保留的包围盒中挑最近目标，发布单雷达原始告警 ----
+  //   检测到目标（best >= 0）即 detected=true + 合法类别 + 自洽 dist_m = √(x²+y²)；
+  //   「是否报警（obstacle_warn_dist）/ 是否报停（obstacle_danger_dist）」由 warning_fusion 判定，
+  //   本实例只上报实际检测结果；无目标才发安全默认值（type=0、坐标 0.0、dist=999.0）。
+  void publishObstacleWarning(
+    const box_msg::msg::Boxs & boxs,
+    const std::vector<BoxGeom> & geoms,
+    const std_msgs::msg::Header & header)
+  {
+    dth_messages::msg::ObstacleWarning msg;
+    int best = -1;
+    float best_dist = std::numeric_limits<float>::max();
+    for (size_t i = 0; i < geoms.size() && i < boxs.box.size(); ++i) {
+      if (geoms[i].near_dist < best_dist) {
+        best_dist = geoms[i].near_dist;
+        best = static_cast<int>(i);
+      }
+    }
+
+    if (best >= 0) {
+      const BoxGeom & geom = geoms[best];
+      msg.detected = true;
+      msg.obstacle_type = static_cast<uint8_t>(obstacle_type_);
+      msg.obstacle_x = geom.near_x;
+      msg.obstacle_y = geom.near_y;
+      msg.dist_m = std::hypot(msg.obstacle_x, msg.obstacle_y);  // 与坐标自洽
+      msg.description = describeThreat(geom, boxs.box[best]);
+
+      const char * level = "SAFE";
+      if (best_dist <= static_cast<float>(obstacle_danger_dist_)) {
+        level = "DANGER";
+      } else if (best_dist <= static_cast<float>(obstacle_warn_dist_)) {
+        level = "CAUTION";
+      }
+      RCLCPP_INFO_THROTTLE(
+        get_logger(), *get_clock(), 2000,
+        "%s检测到障碍物:最近距离=%.2f m（%zu个点）→ %s（报警阈值 %.1f m / 停车阈值 %.1f m）",
+        perception_common::toString(gate_->side()),
+        static_cast<double>(geom.near_dist), geom.points, level,
+        obstacle_warn_dist_, obstacle_danger_dist_);
+    } else {
+      msg.detected = false;
+      msg.obstacle_type = 0;  // detected=false 时必须为 0
+      msg.obstacle_x = 0.0f;
+      msg.obstacle_y = 0.0f;
+      msg.dist_m = 999.0f;    // 无数据哨兵值
+
+      RCLCPP_INFO_THROTTLE(
+        get_logger(), *get_clock(), 2000,
+        "%s 没有检测到障碍物 → SAFE（报警阈值 %.1f m / 停车阈值 %.1f m）",
+        perception_common::toString(gate_->side()),
+        obstacle_warn_dist_, obstacle_danger_dist_);
+    }
+
+    // 透传源点云 header：frame_id = 雷达系坐标，stamp = 源点云时间戳
+    msg.header = header;
+
+    std::lock_guard<std::mutex> lock(obstacle_mutex_);
+    cloud_seen_ = true;
+    last_cloud_time_ = now();
+    publishObstacleLocked(msg, header.stamp);
+    last_obstacle_ = msg;
+  }
+
+  // 门控跳过检测时发布安全默认值并刷新心跳时间戳（保持「在线 + 无目标」语义）
+  void publishSafeObstacle()
+  {
+    dth_messages::msg::ObstacleWarning msg;
+    msg.detected = false;
+    msg.obstacle_type = 0;
+    msg.obstacle_x = 0.0f;
+    msg.obstacle_y = 0.0f;
+    msg.dist_m = 999.0f;
+    msg.header.frame_id = frame_id_;
+
+    std::lock_guard<std::mutex> lock(obstacle_mutex_);
+    cloud_seen_ = true;
+    last_cloud_time_ = now();
+    publishObstacleLocked(msg, now());
+    last_obstacle_ = msg;
+  }
+
+  // 填充 header.stamp 并发布（调用方需持有 obstacle_mutex_）
+  void publishObstacleLocked(dth_messages::msg::ObstacleWarning & msg, const rclcpp::Time & stamp)
+  {
+    msg.header.stamp = stamp;
+    publisher_obstacle_warning_->publish(msg);
+    last_obstacle_publish_time_ = now();
+  }
+
+  // 心跳定时器：与点云处理解耦，保证原始告警话题周期发布；点云断流超时切安全默认值
+  void onObstacleHeartbeat()
+  {
+    std::lock_guard<std::mutex> lock(obstacle_mutex_);
+    const rclcpp::Time now_t = now();
+    const bool sensor_ok = cloud_seen_ && (now_t - last_cloud_time_).seconds() <= obstacle_timeout_s_;
+
+    if (!sensor_ok) {
+      if (cloud_seen_ && !obstacle_stale_warned_) {
+        RCLCPP_WARN(get_logger(),
+                    "%s 点云断流超过 %.2f s，原始障碍物告警转安全默认值（未检出/999.0）",
+                    perception_common::toString(gate_->side()), obstacle_timeout_s_);
+        obstacle_stale_warned_ = true;
+      }
+
+      dth_messages::msg::ObstacleWarning safe;
+      safe.detected = false;
+      safe.obstacle_type = 0;
+      safe.obstacle_x = 0.0f;
+      safe.obstacle_y = 0.0f;
+      safe.dist_m = 999.0f;
+      safe.header.frame_id = frame_id_;
+      publishObstacleLocked(safe, now_t);
+      return;
+    }
+
+    if (obstacle_stale_warned_) {
+      RCLCPP_INFO(get_logger(), "%s 点云恢复，原始障碍物告警恢复正常输出",
+                  perception_common::toString(gate_->side()));
+      obstacle_stale_warned_ = false;
+    }
+
+    if ((now_t - last_obstacle_publish_time_).seconds() >= obstacle_heartbeat_period_s_ * 1.5) {
+      dth_messages::msg::ObstacleWarning msg = last_obstacle_;  // 保留 header（frame_id + 源点云时间戳）
+      publishObstacleLocked(msg, msg.header.stamp);
+    }
+  }
+
+  // 中文简述：方位按本雷达坐标系给出，前缀标明是哪台雷达
+  std::string describeThreat(const BoxGeom & geom, const box_msg::msg::Box & box) const
+  {
+    const char * prefix = lidar_name_ == "front" ? "前雷达 " : (lidar_name_ == "rear" ? "后雷达 " : "");
+    char buf[192];
+    std::snprintf(buf, sizeof(buf), "%s%s %.1fm %s(%.1f×%.1fm)", prefix,
+                  directionName(geom.near_x, geom.near_y), static_cast<double>(geom.near_dist),
+                  obstacleLabel(obstacle_type_), static_cast<double>(box.w),
+                  static_cast<double>(box.l));
+    return std::string(buf);
+  }
+
   // ---- 参数 ---- //
   std::string lidar_name_;
   std::string input_topic_;
@@ -461,12 +740,34 @@ private:
   int max_cluster_size_ = 100000;
   bool publish_ground_grid_ = true;
 
+  // ---- 障碍物告警参数 ---- //
+  std::string obstacle_topic_;
+  double obstacle_heartbeat_hz_ = 10.0;
+  double obstacle_heartbeat_period_s_ = 0.1;
+  double obstacle_timeout_s_ = 0.5;
+  double obstacle_warn_dist_ = 0.0;    // 威胁物上报距离（米），来源: 共享参数文件（无代码默认值）
+  double obstacle_danger_dist_ = 0.0;  // 障碍物急停距离（米），仅日志展示；实际急停由 warning_fusion 判定
+  int obstacle_type_ = 3;              // 强制指定的类别（1 人员 / 2 车辆 / 3 其他）
+  bool motion_gate_enable_ = true;
+
   // ---- 订阅 / 发布 ---- //
   rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr sub_;
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pub_cloud_;
   rclcpp::Publisher<box_msg::msg::Boxs>::SharedPtr pub_boxs_;
   rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr pub_marker_;
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pub_ground_grid_;
+  rclcpp::Publisher<dth_messages::msg::ObstacleWarning>::SharedPtr publisher_obstacle_warning_;
+
+  // ---- 运动方向定向检测门控 + 告警心跳状态 ---- //
+  std::unique_ptr<perception_common::MotionGate> gate_;
+  perception_common::MotionState last_motion_{perception_common::MotionState::kStopped};
+  rclcpp::TimerBase::SharedPtr obstacle_heartbeat_timer_;
+  std::mutex obstacle_mutex_;
+  dth_messages::msg::ObstacleWarning last_obstacle_;
+  rclcpp::Time last_obstacle_publish_time_;
+  rclcpp::Time last_cloud_time_;
+  bool cloud_seen_ = false;
+  bool obstacle_stale_warned_ = false;
 };
 
 int main(int argc, char ** argv)

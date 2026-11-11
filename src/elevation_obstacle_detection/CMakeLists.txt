@@ -18,6 +18,8 @@ find_package(visualization_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(pcl_conversions REQUIRED)
 find_package(box_msg REQUIRED)
+find_package(dth_messages REQUIRED)
+find_package(perception_common REQUIRED)
 find_package(PCL REQUIRED COMPONENTS common filters segmentation)
 find_package(Eigen3 REQUIRED)
 
@@ -35,6 +37,8 @@ ament_target_dependencies(elevation_obstacle_detection_node
   geometry_msgs
   pcl_conversions
   box_msg
+  dth_messages
+  perception_common
 )
 
 target_link_libraries(elevation_obstacle_detection_node
