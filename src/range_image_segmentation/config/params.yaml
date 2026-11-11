@@ -14,9 +14,9 @@
 range_image_segmentation_front:
   ros__parameters:
     lidar_name: "front"
-    input_topic: "/front/all_filter"
+    # input_topic: "/front/all_filter"
     input_topic: "/front/leveled_filtered_smoothed"    
-    # edge_cloud_topic: "/front/ditch_cloud"
+    edge_cloud_topic: "/front/ditch_cloud"
     edge_line_topic: "/front/ditch_line"
     frame_id: "front_rslidar"
 
@@ -65,7 +65,8 @@ range_image_segmentation_front:
 range_image_segmentation_rear:
   ros__parameters:
     lidar_name: "rear"
-    input_topic: "/rear/all_filter"
+    # input_topic: "/rear/all_filter"
+    input_topic: "/rear/leveled_filtered_smoothed"      
     edge_cloud_topic: "/rear/ditch_cloud"
     edge_line_topic: "/rear/ditch_line"
     frame_id: "rear_rslidar"
