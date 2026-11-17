@@ -30,9 +30,9 @@
 warning_fusion:
   ros__parameters:
     # ---- 契约话题（§4.1 冻结：不得增删改名）----
-    edge_warning_topic: "/perception/edge_warning"
-    obstacle_warning_topic: "/perception/obstacle_warning"
-    stop_command_topic: "/perception/stop_command"
+    edge_warning_topic: "/perception/edge_warning1"
+    obstacle_warning_topic: "/perception/obstacle_warning1"
+    stop_command_topic: "/perception/stop_command1"
 
     # ---- 原始告警来源（检测节点私有名空间，见各包 launch 的节点名）----
     front_edge_topic: "/range_image_segmentation_front/edge_warning_raw"
