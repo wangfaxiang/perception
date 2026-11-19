@@ -96,6 +96,8 @@ public:
     //   > line_yellow_dist 绿色
     line_red_dist_ = declare_parameter<double>("line_red_dist", 1.6);
     line_yellow_dist_ = declare_parameter<double>("line_yellow_dist", 1.8);
+    // 边缘折线最少点数：少于该值时只发布边缘点云与告警，不绘制折线
+    line_min_points_ = declare_parameter<int>("line_min_points", 5);
 
     // 障碍物框过滤：订阅 cluster 的全量框（不过滤），剔除框内由地面障碍物/推进梁形成的假边缘
     box_topic_ = declare_parameter<std::string>(
@@ -187,6 +189,7 @@ public:
     RCLCPP_INFO(get_logger(), "方位角聚类: gap_range=%.2fm, gap_dist=%.2fm, min_points=%d, smooth=%s",
                 cluster_gap_range_, cluster_gap_dist_, cluster_min_points_,
                 edge_smooth_enable_ ? "on" : "off");
+    RCLCPP_INFO(get_logger(), "边缘折线最少点数: %d（少于该值不绘制折线）", line_min_points_);
 
     // 发布水平角/俯仰角分割网格到 rviz（静态，发布一次即可）
     publishGrid();
@@ -534,100 +537,111 @@ private:
     pcl::PointCloud<pcl::PointXYZI> edge_clustered;
 
     if (!order.empty()) {
-      // 最近边缘点的水平距离（xy 平面），决定折线颜色与距离标注
-      double min_hdist = std::numeric_limits<double>::max();
-      int min_idx = -1;
-      for (int i = 0; i < static_cast<int>(order.size()); ++i) {
-        const auto & qc = edge_filtered[order[i].second];
-        const double h = std::hypot(qc.x, qc.y);
-        if (h < min_hdist) {
-          min_hdist = h;
-          min_idx = order[i].second;
-        }
-      }
-
-      float r = 0.0f, g = 1.0f, b = 0.0f;  // 默认绿色（>1.8m）
-      if (min_hdist < line_red_dist_) {
-        r = 1.0f; g = 0.0f; b = 0.0f;       // <1.6m 红色
-      } else if (min_hdist <= line_yellow_dist_) {
-        r = 1.0f; g = 1.0f; b = 0.0f;       // 1.6~1.8m 黄色
-      }
-
-      visualization_msgs::msg::Marker line;
-      line.header = header;
-      line.ns = "ditch";
-      line.id = 0;
-      line.type = visualization_msgs::msg::Marker::LINE_STRIP;
-      line.action = visualization_msgs::msg::Marker::ADD;
-      line.scale.x = 0.1;
-      line.color.r = r;
-      line.color.g = g;
-      line.color.b = b;
-      line.color.a = 1.0f;
-      line.pose.orientation.w = 1.0;
-      // 按方位角排序的原始边缘点：既用于边坡告警，也作为平滑输入
-      std::vector<geometry_msgs::msg::Point> raw;
-      raw.reserve(order.size());
+      // 按方位角排序的原始边缘点：告警始终使用全部边缘点
       edge_clustered.reserve(order.size());
       for (const auto & o : order) {
-        const auto & qc = edge_filtered[o.second];
-        geometry_msgs::msg::Point pt;
-        pt.x = qc.x;
-        pt.y = qc.y;
-        pt.z = qc.z;
-        raw.push_back(pt);
-        edge_clustered.push_back(qc);
+        edge_clustered.push_back(edge_filtered[o.second]);
       }
 
-      // 滑动平均（居中窗口）：仅用于折线显示，告警仍用上面的原始点
-      const int n = static_cast<int>(raw.size());
-      int w = edge_smooth_enable_ ? smooth_window_ : 1;
-      if (w < 1) w = 1;
-      if (w > n) w = n;
-      if (w % 2 == 0) w += 1;  // 居中窗口取奇数，两侧对称
-      const int half = w / 2;
-
-      line.points.reserve(n);
-      for (int i = 0; i < n; ++i) {
-        const int lo = std::max(0, i - half);
-        const int hi = std::min(n - 1, i + half);
-        double sx = 0.0, sy = 0.0, sz = 0.0;
-        for (int j = lo; j <= hi; ++j) {
-          sx += raw[j].x;
-          sy += raw[j].y;
-          sz += raw[j].z;
+      // 边缘点太少（阈值可配置）时不绘制折线，避免把零星噪声连成线
+      if (static_cast<int>(order.size()) >= line_min_points_) {
+        // 最近边缘点的水平距离（xy 平面），决定折线颜色与距离标注
+        double min_hdist = std::numeric_limits<double>::max();
+        int min_idx = -1;
+        for (int i = 0; i < static_cast<int>(order.size()); ++i) {
+          const auto & qc = edge_filtered[order[i].second];
+          const double h = std::hypot(qc.x, qc.y);
+          if (h < min_hdist) {
+            min_hdist = h;
+            min_idx = order[i].second;
+          }
         }
-        const double cnt = static_cast<double>(hi - lo + 1);
-        geometry_msgs::msg::Point p;
-        p.x = sx / cnt;
-        p.y = sy / cnt;
-        p.z = sz / cnt;
-        line.points.push_back(p);
-      }
-      array.markers.push_back(line);
 
-      // 最近点旁标注水平距离（rviz TEXT_VIEW_FACING）
-      if (min_idx >= 0) {
-        const auto & qc = edge_filtered[min_idx];
-        visualization_msgs::msg::Marker text;
-        text.header = header;
-        text.ns = "ditch_dist";
-        text.id = 1;
-        text.type = visualization_msgs::msg::Marker::TEXT_VIEW_FACING;
-        text.action = visualization_msgs::msg::Marker::ADD;
-        text.scale.z = 0.4;
-        text.color.r = r;
-        text.color.g = g;
-        text.color.b = b;
-        text.color.a = 1.0f;
-        text.pose.orientation.w = 1.0;
-        text.pose.position.x = qc.x;
-        text.pose.position.y = qc.y;
-        text.pose.position.z = qc.z + 0.3;
-        char buf[32];
-        std::snprintf(buf, sizeof(buf), "%.2f m", min_hdist);
-        text.text = buf;
-        array.markers.push_back(text);
+        float r = 0.0f, g = 1.0f, b = 0.0f;  // 默认绿色（>1.8m）
+        if (min_hdist < line_red_dist_) {
+          r = 1.0f; g = 0.0f; b = 0.0f;       // <1.6m 红色
+        } else if (min_hdist <= line_yellow_dist_) {
+          r = 1.0f; g = 1.0f; b = 0.0f;       // 1.6~1.8m 黄色
+        }
+
+        visualization_msgs::msg::Marker line;
+        line.header = header;
+        line.ns = "ditch";
+        line.id = 0;
+        line.type = visualization_msgs::msg::Marker::LINE_STRIP;
+        line.action = visualization_msgs::msg::Marker::ADD;
+        line.scale.x = 0.1;
+        line.color.r = r;
+        line.color.g = g;
+        line.color.b = b;
+        line.color.a = 1.0f;
+        line.pose.orientation.w = 1.0;
+        // 按方位角排序的原始边缘点：既用于边坡告警，也作为平滑输入
+        std::vector<geometry_msgs::msg::Point> raw;
+        raw.reserve(order.size());
+        for (const auto & o : order) {
+          const auto & qc = edge_filtered[o.second];
+          geometry_msgs::msg::Point pt;
+          pt.x = qc.x;
+          pt.y = qc.y;
+          pt.z = qc.z;
+          raw.push_back(pt);
+        }
+
+        // 滑动平均（居中窗口）：仅用于折线显示，告警仍用上面的原始点
+        const int n = static_cast<int>(raw.size());
+        int w = edge_smooth_enable_ ? smooth_window_ : 1;
+        if (w < 1) w = 1;
+        if (w > n) w = n;
+        if (w % 2 == 0) w += 1;  // 居中窗口取奇数，两侧对称
+        const int half = w / 2;
+
+        line.points.reserve(n);
+        for (int i = 0; i < n; ++i) {
+          const int lo = std::max(0, i - half);
+          const int hi = std::min(n - 1, i + half);
+          double sx = 0.0, sy = 0.0, sz = 0.0;
+          for (int j = lo; j <= hi; ++j) {
+            sx += raw[j].x;
+            sy += raw[j].y;
+            sz += raw[j].z;
+          }
+          const double cnt = static_cast<double>(hi - lo + 1);
+          geometry_msgs::msg::Point p;
+          p.x = sx / cnt;
+          p.y = sy / cnt;
+          p.z = sz / cnt;
+          line.points.push_back(p);
+        }
+        array.markers.push_back(line);
+
+        // 最近点旁标注水平距离（rviz TEXT_VIEW_FACING）
+        if (min_idx >= 0) {
+          const auto & qc = edge_filtered[min_idx];
+          visualization_msgs::msg::Marker text;
+          text.header = header;
+          text.ns = "ditch_dist";
+          text.id = 1;
+          text.type = visualization_msgs::msg::Marker::TEXT_VIEW_FACING;
+          text.action = visualization_msgs::msg::Marker::ADD;
+          text.scale.z = 0.4;
+          text.color.r = r;
+          text.color.g = g;
+          text.color.b = b;
+          text.color.a = 1.0f;
+          text.pose.orientation.w = 1.0;
+          text.pose.position.x = qc.x;
+          text.pose.position.y = qc.y;
+          text.pose.position.z = qc.z + 0.3;
+          char buf[32];
+          std::snprintf(buf, sizeof(buf), "%.2f m", min_hdist);
+          text.text = buf;
+          array.markers.push_back(text);
+        }
+      } else {
+        RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 2000,
+                             "边缘点过少（%zu < %d），不绘制边缘折线",
+                             order.size(), line_min_points_);
       }
     }
 
@@ -787,6 +801,7 @@ private:
   int smooth_window_ = 5;
   double line_red_dist_ = 1.6;
   double line_yellow_dist_ = 1.8;
+  int line_min_points_ = 5;
   double horiz_min_ = -60.0;
   double horiz_max_ = 60.0;
   double vert_min_ = -45.0;

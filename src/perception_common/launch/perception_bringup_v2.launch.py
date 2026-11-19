@@ -103,26 +103,10 @@ def _launch_setup(context):
 
     # ---------- 0) 数据源：rosbag 回放 or 雷达驱动（二选一） ----------
     if is_true('use_bag'):
-        bags = []
-        for label, arg_name in (('前雷达', 'front_bag'), ('后雷达', 'rear_bag')):
-            bag_path = abs_path(value(arg_name))
-            if not os.path.isdir(bag_path):
-                actions.append(_warn(f'{label} rosbag 不存在，已跳过: {bag_path}'))
-                continue
-            cmd = ['ros2', 'bag', 'play', bag_path]
-            if is_true('bag_loop'):
-                cmd.append('--loop')
-            bags.append(ExecuteProcess(cmd=cmd, cwd=workspace, output='screen'))
-
-        if bags:
-            delay = float(value('bag_delay_s'))
-            detail = '（--loop 循环）' if is_true('bag_loop') else ''
-            actions.append(
-                LogInfo(msg=f'[bringup] 数据源: rosbag 回放{detail}，延迟 {delay:.1f}s 开始播放')
-            )
-            actions.append(TimerAction(period=delay, actions=bags))
-        else:
-            actions.append(_warn('没有可播放的 rosbag，链路将收不到点云'))
+        # 不自动播放 bag，由用户手动 ros2 bag play
+        actions.append(
+            LogInfo(msg='[bringup] 数据源: 手动回放 rosbag（本 launch 不播放，请自行 ros2 bag play ...）')
+        )
     else:
         lidar_driver = value('lidar_driver').strip().lower()
         if lidar_driver == 'rslidar':
